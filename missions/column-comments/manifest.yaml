@@ -1,0 +1,261 @@
+version: '1'
+input:
+  source: column-comments-enrichment
+  url: https://github.com/gdcorp-dna/lake
+  content: "__GENERATED_BY_RUN_SH__"
+
+plan:
+  repositories:
+    - url: https://github.com/gdcorp-dna/lake.git
+      writable: false
+      description: >
+        GoDaddy Data Lake registry. Contains table DDL and metadata YAML files
+        under catalog/config/prod/us-west-2/<db>/<table>/ or
+        catalog/config/prod/dlms-api/us-west-2/<db>/<table>/.
+
+  stages:
+    - name: research
+      prompt: |
+        You are a Data Governance analyst enriching column descriptions for a Data Lake table.
+
+        ## Step 1: Read INPUT.md
+        Read `INPUT.md` in your workspace. It contains:
+        - The TARGET TABLE (database, table name, DDL path, YAML path)
+        - CONFLUENCE PAGES to fetch
+        - REFERENCE TABLES for Alation lookup
+        - ALATION configuration
+
+        Use these details for all subsequent steps.
+
+        ## Step 2: Read the Table DDL and Metadata
+        From INPUT.md, determine the DDL and YAML paths. Read those EXACT files
+        from the cloned repository under `repos/lake/`.
+
+        ## Step 3: Fetch Confluence Pages
+        For each URL listed in INPUT.md under CONFLUENCE PAGES, use the Atlassian
+        REST API to fetch page content. The page ID is the numeric part of the URL path.
+        For example, from URL `.../pages/10371978/Fact_Bill_Line`, the page ID is `10371978`.
+
+        **Credentials:** Confluence credentials are in the `MOONUNIT_JIRA` env var (JSON).
+        Extract them first:
+        ```bash
+        ATLASSIAN_CREDS=$(node -e "const j=JSON.parse(process.env.MOONUNIT_JIRA); console.log(j.email + ':' + j.api_token)")
+        curl -s -u "$ATLASSIAN_CREDS" \
+          "https://godaddy-corp.atlassian.net/wiki/rest/api/content/{PAGE_ID}?expand=body.storage"
+        ```
+
+        Alternatively, if `MOONUNIT_ATLASSIAN` is set:
+        ```bash
+        ATLASSIAN_CREDS=$(node -e "const j=JSON.parse(process.env.MOONUNIT_ATLASSIAN); console.log(j.email + ':' + j.api_token)")
+        curl -s -u "$ATLASSIAN_CREDS" \
+          "https://godaddy-corp.atlassian.net/wiki/rest/api/content/{PAGE_ID}?expand=body.storage"
+        ```
+
+        Fetch ALL pages listed in INPUT.md. Extract and summarize content relevant to
+        understanding what each column represents.
+
+        ## Step 4: Alation Lookup (if enabled)
+        Check INPUT.md for ALATION configuration. If enabled:
+
+        First, extract Alation credentials and get an API access token:
+        ```bash
+        ALATION_CREDS=$(node -e "const j=JSON.parse(process.env.MOONUNIT_ALATION); console.log(JSON.stringify({refresh_token:j.refresh_token, user_id:j.user_id}))")
+        curl -s -X POST "https://godaddy.alationcloud.com/integration/v1/createAPIAccessToken/" \
+          -H "Content-Type: application/json" \
+          -d "$ALATION_CREDS"
+        ```
+        This returns a JSON with `api_access_token`. Use it as `TOKEN` header for subsequent calls.
+
+        Then search for the table (use the table name from INPUT.md, with underscores):
+        ```
+        curl "https://godaddy.alationcloud.com/integration/v2/table/?name={table_name_underscored}&limit=5" \
+          -H "TOKEN: $API_ACCESS_TOKEN"
+        ```
+        Look for the entry with ds_id=81 (AwsDataCatalog) and matching schema. Note the table `id`.
+
+        Then fetch column metadata:
+        ```
+        curl "https://godaddy.alationcloud.com/integration/v2/column/?table_id={table_id}&limit=200" \
+          -H "TOKEN: $API_ACCESS_TOKEN"
+        ```
+        Each column object contains these important fields:
+        - `name` — column name
+        - `description` — user-authored description in Alation (may be empty)
+        - `column_comment` — **Source Comment** propagated from the DDL COMMENT clause
+          in the Data Lake Registry (GitHub). This is the existing inline comment from
+          the table's DDL file. It may contain valuable annotations like 'Employee PII',
+          business definitions, or enum descriptions that MUST be preserved or incorporated.
+        - `title` — display title in Alation
+
+        Extract BOTH `description` and `column_comment` for each column. When writing
+        enriched descriptions:
+        - If `column_comment` contains important annotations (e.g., 'Employee PII',
+          enum values, business rules), these MUST be preserved in the enriched comment.
+        - If `column_comment` already has a meaningful description, use it as a strong
+          starting point and enhance it to meet the Column Description Standard.
+        - If both `description` and `column_comment` exist, merge the information.
+
+        Also capture the table-level description from the search result, which contains
+        rich context about primary keys, use cases, and data quirks.
+
+        ## Step 4a: Reference/Successor Tables
+        Check INPUT.md for REFERENCE TABLES. If any are listed, look up each table's
+        columns in Alation to extract existing column descriptions.
+
+        For each reference table, use the provided `alation_table_id`:
+        ```
+        curl "https://godaddy.alationcloud.com/integration/v2/column/?table_id={alation_table_id}&limit=200" \
+          -H "TOKEN: $API_ACCESS_TOKEN"
+        ```
+        Extract both `description` and `column_comment` (Source Comment) for each column.
+        The `column_comment` field contains the DDL inline comment from the reference table's
+        Data Lake Registry — these are existing descriptions written by data engineers and
+        are a primary source of truth for what columns mean.
+        Also fetch the table-level metadata:
+        ```
+        curl "https://godaddy.alationcloud.com/integration/v2/table/?id={alation_table_id}" \
+          -H "TOKEN: $API_ACCESS_TOKEN"
+        ```
+        Map columns from the reference table to the target table by name. Where column names
+        match, carry over the description as a strong candidate for the target column's comment.
+
+        ## Step 4b: Certified Data Dictionary (Alation Document Folder 6) — MANDATORY
+        **CRITICAL:** You MUST fetch and use the official GoDaddy Certified Data Dictionary
+        definitions from Alation (Document Folder ID 6, URL: https://godaddy.alationcloud.com/doc-folder/6/).
+        These are GoDaddy's AUTHORITATIVE definitions. NEVER invent, guess, or fabricate
+        what an abbreviation stands for. If the dictionary says "GCR = Gross Cash Receipts",
+        you MUST use "Gross Cash Receipts" — not "Gross Customer Receipt" or any other variation.
+
+        **Procedure:**
+        1. Fetch ALL documents from the folder (paginate with skip):
+        ```
+        curl "https://godaddy.alationcloud.com/integration/v2/document/?folder_id=6&limit=50&skip=0" \
+          -H "TOKEN: $API_ACCESS_TOKEN"
+        curl "https://godaddy.alationcloud.com/integration/v2/document/?folder_id=6&limit=50&skip=50" \
+          -H "TOKEN: $API_ACCESS_TOKEN"
+        curl "https://godaddy.alationcloud.com/integration/v2/document/?folder_id=6&limit=50&skip=100" \
+          -H "TOKEN: $API_ACCESS_TOKEN"
+        ```
+
+        2. Build a lookup table mapping abbreviations/terms to their official names:
+        Each document has `id`, `title`, `description` (HTML body).
+        The `title` contains the official term, e.g.:
+        - "Gross Cash Receipts (GCR)" — GCR = Gross Cash Receipts
+        - "New Registered User (NRU) Count" — NRU = New Registered User
+        - "Monthly Recurring Revenue (MRR)" — MRR = Monthly Recurring Revenue
+
+        3. For EVERY abbreviation found in column names (e.g., gcr, mrr, nru, mau, aos),
+        look up its official expansion in the dictionary titles. If found, you MUST use
+        the exact official name — DO NOT paraphrase or invent alternative expansions.
+
+        4. For each matching document, fetch its full definition:
+        ```
+        curl "https://godaddy.alationcloud.com/integration/v2/document/?id={doc_id}" \
+          -H "TOKEN: $API_ACCESS_TOKEN"
+        ```
+        Extract the official definition from the `description` field (HTML).
+
+        5. In your research output, create a section called "## Certified Data Dictionary Mappings"
+        that explicitly lists EVERY abbreviation → official name mapping you found.
+        Example:
+        ```
+        | Abbreviation | Official Name | Document ID |
+        |---|---|---|
+        | GCR | Gross Cash Receipts | 6 |
+        | MSRP | Manufacturer's Suggested Retail Price | (not in dictionary) |
+        ```
+
+        **RULE: If an abbreviation is in the Certified Data Dictionary, its official expansion
+        is the ONLY acceptable expansion. Never fabricate alternatives.**
+
+        ## Step 5: Produce Research Output
+        Write a structured research document containing:
+        - The full current DDL
+        - Key metadata from table.yaml (description, lineage, upstream dependencies)
+        - Summarized knowledge from Confluence pages
+        - Alation catalog metadata (if available), including Source Comments (column_comment)
+          from both the target table and reference tables
+        - GoDaddy Data Dictionary definitions for relevant business terms
+        - For each column: current DDL comment (if any), Alation Source Comment (if any),
+          Alation description (if any), inferred purpose, and relevant context from all sources
+
+        Environment variables available (all are JSON, parse with node):
+        - MOONUNIT_JIRA — {"url","email","api_token"} (use for Confluence access)
+        - MOONUNIT_ATLASSIAN — {"email","api_token"} (alternative Confluence creds)
+        - MOONUNIT_ALATION — {"url","refresh_token","user_id"} (Alation access)
+      model: claude-sonnet-4-6
+      skills: []
+      output: research.md
+
+    - name: enrich
+      prompt: |
+        You are a Data Governance specialist writing column descriptions that comply with
+        the GoDaddy Data Governance Council's Column Description Standard for Data Lake Assets.
+
+        ## Step 1: Read INPUT.md
+        Read `INPUT.md` to understand the target table (database, table, DDL path).
+
+        ## CRITICAL: Use Official Terminology from Research
+        The research.md file contains a "Certified Data Dictionary Mappings" section with
+        the OFFICIAL GoDaddy abbreviation expansions. You MUST use these EXACT terms.
+        For example:
+        - GCR = "Gross Cash Receipts" (NOT "Gross Customer Receipt" or any other variation)
+        - NRU = "New Registered User"
+        - MRR = "Monthly Recurring Revenue"
+        If the research lists an official name for an abbreviation, that is the ONLY
+        acceptable expansion. NEVER invent or guess alternative expansions.
+
+        ## Column Description Standard (mandatory rules)
+
+        1. **Be Clear and Concise** — Use plain, unambiguous language. Avoid jargon unless standard.
+        2. **Describe What, Not How** — Focus on what the data represents, not how it's computed.
+        3. **Include Context When Needed** — Add business/domain context for ambiguous terms.
+        4. **Avoid Abbreviations** — Use full words unless industry standard (SSN, URL, ISO).
+        5. **Indicate Units and Scale** — Include currency, percentage, milliseconds, etc.
+        6. **Avoid Redundancy with Column Names** — Provide additional value, don't repeat the name.
+        7. **Standardize Format** — Use: [What it is] [optional qualifier], [optional business context], [optional format or unit].
+        8. **Key Annotations**:
+           - Add `@PrimaryKey`, `@UniqueKey` or `@ForeignKey(destination_table)` if applicable
+           - Add `@Enumerated(value1, value2, ...)` for columns with limited important values
+        9. **AI Search Optimization**:
+           - Use semantic-rich phrases (full sentences or structured fragments)
+           - Include synonyms or aliases in parentheses where applicable
+           - Tag key data concepts (timestamp, email address, SKU, revenue, etc.)
+           - Avoid generic or placeholder descriptions
+        10. **PK/Primary Key** — Every table must have at least one column with a comment starting
+            with PK, Primary Key, Unique Key, or Unique Identifier.
+        11. **Audit columns** — Must contain timestamp with timezone info (e.g., etl_build_mst_ts).
+        12. **Preserve existing valid annotations** — Keep comments like 'Employee PII' and append
+            descriptive text after them.
+
+        ## Examples of Good Descriptions
+        | Column | Description |
+        |--------|-------------|
+        | customer_id | @PrimaryKey The UUID identifier of a customer. |
+        | billing_country_code | @ForeignKey(dm_reference.dim_geography) Billing country code. |
+        | order_total_usd_amt | Total value of the order in US dollars, including taxes and discounts. |
+        | create_utc_ts | Timestamp representing when the record was created (UTC, ISO 8601). |
+        | email_opt_in_flag | Indicates whether the user consented to receive email communications (true/false). |
+
+        ## Your Task
+        Using the research output from the previous stage (`research.md`), produce a revised
+        `table.ddl` file with enriched column comments.
+
+        **Rules:**
+        - Every column MUST have a comment
+        - **Column comments MUST NOT exceed 255 characters.** If a description would be
+          longer than 255 characters, condense it by keeping only the most relevant
+          information (prioritize: key annotations, what the data represents, units/format).
+          Drop secondary context, synonyms, or verbose qualifiers to fit within the limit.
+        - Preserve the exact column names, types, and order from the original DDL
+        - Preserve existing valid comments (like 'Employee PII') — append descriptive text
+        - If a column already has a good description, keep or enhance it
+        - Use single quotes around comment strings in the DDL
+        - Maintain proper DDL syntax (CREATE TABLE statement, commas, semicolon)
+        - Do NOT change any column names, types, or table structure
+        - Output only the revised DDL — no explanation or preamble
+
+        Write the final DDL to the output file.
+      model: claude-sonnet-4-6
+      skills: []
+      output: enriched-table.ddl

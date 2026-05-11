@@ -1,0 +1,13 @@
+# Secrets
+.env
+.env.local
+api-keys.txt
+
+# Mission runtime files
+missions/*/output/
+.mu-run.log
+.watcher.log
+.manifest.generated.yaml
+
+# macOS
+.DS_Store

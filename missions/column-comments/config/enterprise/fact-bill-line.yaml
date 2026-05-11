@@ -1,0 +1,34 @@
+# Configuration for Column Comments Enrichment Mission
+# Edit this file before each run to specify the target table and reference materials.
+
+# Target table location in the data lake registry
+target:
+  # Database name (e.g., "analytic", "customer360", "ecomm-cln")
+  db_name: "enterprise"
+  # Table name (e.g., "ads-bill-line", "cdl-current")
+  table_name: "fact-bill-line"
+  # Registry path variant: "standard" or "dlms-api"
+  #   standard: catalog/config/prod/us-west-2/<db-name>/<table-name>/
+  #   dlms-api: catalog/config/prod/dlms-api/us-west-2/<db-name>/<table-name>/
+  registry_path: "standard"
+
+# Confluence pages for table requirements and design specifications
+# Add as many pages as needed — the agent will read all of them for context.
+confluence_pages:
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/10371978/Fact_Bill_Line"
+    description: "Fact_Bill_Line design specification — includes column-level schema, data sources, and business logic"
+
+# Successor/related tables whose column descriptions provide relevant context
+# The agent will look up these tables in Alation to extract existing column descriptions.
+reference_tables:
+  - name: "fact_bill_line_vw"
+    schema: "ecomm360"
+    alation_table_id: 7027689
+    description: "Successor table — ecomm360.fact_bill_line_vw. Most column descriptions are relevant to enterprise.fact_bill_line."
+
+# Alation configuration (optional — enriches descriptions with catalog metadata)
+# Alation credentials (user_id, refresh_token, URL) are loaded from .env
+alation:
+  enabled: true
+  # Table search query (defaults to db_name.table_name if not set)
+  search_query: null
