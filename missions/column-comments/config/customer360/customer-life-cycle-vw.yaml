@@ -6,11 +6,11 @@ target:
   # Database name (e.g., "analytic", "customer360", "ecomm-cln")
   db_name: "customer360"
   # Table name (e.g., "ads-bill-line", "cdl-current")
-  table_name: "customer-lifecycle-vw"
+  table_name: "customer-life-cycle-vw"
   # Registry path variant: "standard" or "dlms-api"
   #   standard: catalog/config/prod/us-west-2/<db-name>/<table-name>/
   #   dlms-api: catalog/config/prod/dlms-api/us-west-2/<db-name>/<table-name>/
-  registry_path: "standard"
+  registry_path: "dlms-api"
 
 # Confluence pages for table requirements and design specifications
 # Add as many pages as needed — the agent will read all of them for context.

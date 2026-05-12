@@ -243,10 +243,14 @@ plan:
 
         **Rules:**
         - Every column MUST have a comment
-        - **Column comments MUST NOT exceed 255 characters.** If a description would be
-          longer than 255 characters, condense it by keeping only the most relevant
-          information (prioritize: key annotations, what the data represents, units/format).
-          Drop secondary context, synonyms, or verbose qualifiers to fit within the limit.
+        - **HARD LIMIT: Column comments MUST NOT exceed 255 characters. NO EXCEPTIONS.**
+          This is a system constraint — comments longer than 255 characters will be
+          TRUNCATED by the database engine and cause data loss. For EVERY comment you write,
+          count the characters. If it exceeds 255, you MUST condense it:
+          - Keep ONLY: the key annotation (@PrimaryKey etc.) + what the data represents
+          - DROP: synonyms, parenthetical aliases, verbose qualifiers, secondary context
+          - DROP: @Enumerated values if the list is too long — summarize instead
+          - NEVER sacrifice the 255-char limit for completeness — brevity wins
         - Preserve the exact column names, types, and order from the original DDL
         - Preserve existing valid comments (like 'Employee PII') — append descriptive text
         - If a column already has a good description, keep or enhance it
@@ -255,7 +259,56 @@ plan:
         - Do NOT change any column names, types, or table structure
         - Output only the revised DDL — no explanation or preamble
 
+        ## MANDATORY VALIDATION (do this before writing output)
+        After drafting all comments, run this check on EVERY comment string:
+        - Count the characters between the single quotes in each COMMENT '...'
+        - If ANY comment exceeds 255 characters, REWRITE it shorter immediately
+        - Repeat until ALL comments are ≤ 255 characters
+        - Only then write the final DDL to the output file
+
         Write the final DDL to the output file.
       model: claude-sonnet-4-6
       skills: []
       output: enriched-table.ddl
+
+    - name: validate
+      prompt: |
+        You are a strict validation agent. Your ONLY job is to enforce the 255-character
+        limit on column COMMENT strings in a DDL file.
+
+        ## Instructions
+
+        1. Read `enriched-table.ddl` from the previous stage.
+
+        2. For EVERY line containing COMMENT, extract the string between the single quotes
+           and count its characters.
+
+        3. If ALL comments are ≤ 255 characters, output the file UNCHANGED. Do not modify
+           anything — write it exactly as-is to the output file.
+
+        4. If ANY comment exceeds 255 characters, you MUST rewrite ONLY those comments to
+           fit within 255 characters. Apply these condensing rules IN ORDER:
+           - Remove parenthetical synonyms/aliases: "(also known as X)" → remove
+           - Remove verbose qualifiers: "that is used for" → remove or shorten
+           - Shorten @Enumerated lists: if enum values make it too long, keep only the
+             most important 2-3 values and add "etc." or remove @Enumerated entirely
+           - Remove secondary context sentences (keep only the primary definition)
+           - Use shorter phrasing: "Indicates whether" → "Whether"
+           - Abbreviate well-known terms if needed: "Mountain Standard Time" → "MST"
+           - As a last resort, drop the least essential clause entirely
+
+           **NEVER truncate mid-word or mid-sentence. NEVER use "..." to cut off.**
+           The condensed comment must be a complete, grammatically correct description
+           that preserves the essential meaning and any key annotations (@PrimaryKey, etc.).
+
+        5. After rewriting, verify AGAIN that all comments are ≤ 255 characters.
+           If any still exceed the limit, condense further. Repeat until compliant.
+
+        6. Write the final validated DDL to the output file. Output ONLY the DDL —
+           no explanation, no preamble, no markdown.
+
+        **CRITICAL:** Do NOT change column names, types, order, or table structure.
+        Do NOT modify comments that are already ≤ 255 characters.
+      model: claude-sonnet-4-6
+      skills: []
+      output: validated-table.ddl
