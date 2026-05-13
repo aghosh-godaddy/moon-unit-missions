@@ -171,13 +171,32 @@ Environment variables available (all are JSON, parse with node):
 
 ---
 
-## Research Summary — pricing_mart.product_price_catalog
+## Stage: Data Governance Research — pricing_mart.product_price_catalog
 
-### Stage: Data Governance Column Enrichment Research
+### 1. Target Table Overview
+
+- **Database:** pricing-mart  
+- **Table:** product_price_catalog  
+- **DDL path:** `catalog/config/prod/us-west-2/pricing-mart/product-price-catalog/table.ddl`  
+- **YAML path:** `catalog/config/prod/us-west-2/pricing-mart/product-price-catalog/table.yaml`  
+- **Alation ID (ds_id=81):** 7010676  
+- **Data Tier:** 3  
+- **Storage Format:** Parquet  
+- **Table Type:** PARTITIONED  
+- **SLA:** Daily delivery by 5:00am MST  
+
+**Alation Table Description (cleaned):**  
+"Product Price Catalog provides a daily snapshot of GoDaddy's & 123 Reg's product list price, sale price and cost (domain product only) for all products, markets, currencies and membership price types."
+
+Primary Key: `(pf_id, price_type_id, price_group_id, trxn_currency_code, as_of_mst_date, private_label_id)`
+
+**Partition Keys (from table.yaml):**
+- `as_of_mst_date` (string) — snapshot date
+- `private_label_id` (int) — reseller/private label identifier
 
 ---
 
-## 1. Full Current DDL
+### 2. Full Current DDL
 
 ```sql
 CREATE TABLE product_price_catalog(
@@ -217,434 +236,202 @@ CREATE TABLE product_price_catalog(
   cost_change_flag boolean COMMENT 'Indicates whether the cost changed compared to the prior period (true/false)',
   etl_build_mst_ts timestamp COMMENT 'Timestamp when the ETL process created or last updated this record (MST)'
 )
--- Partition keys (defined in table.yaml, not in DDL body):
---   as_of_mst_date string
---   private_label_id int
 ```
 
----
-
-## 2. Table Metadata (table.yaml)
-
-- **Description**: "This table captures product price information"
-- **Storage format**: Parquet
-- **Table type**: PARTITIONED
-- **Data tier**: 3
-- **SLA**: Daily delivery by 5:00am MST (`cron(0 12 * * ? *)`)
-- **Partition keys**: `as_of_mst_date` (string), `private_label_id` (int)
-- **Upstream dependencies**:
-  - bigreporting.dim_product_snap
-  - godaddy.gdshop_currencytype_snap
-  - godaddy.gdshop_currencytypeconversionrate_snap
-  - godaddy.gdshop_dept_snap
-  - godaddy.gdshop_product_snap
-  - godaddy.gdshop_product_type_snap
-  - godaddy.gdshop_variant_price_type_snap
-  - gdmastercatalog.catalog_countrysite_snap
-  - gdmastercatalog.catalog_pricegroup_snap
-  - gdmastercatalog.catalog_productprivatelabelprice_snap
-  - gdmastercatalog.catalog_productprivatelabelpricesale_snap
-  - gdmastercatalog.catalog_productresellertypeprice_snap
-  - gdmastercatalog.catalog_productresellertype_snap
-  - godaddy.pl_resellertype_snap
-  - pricing_mart.product_price_catalog (self-reference, likely for incremental/backfill)
-  - godaddy.pl_signupinfo_snap
+Partition columns with NO current DDL comment:
+- `as_of_mst_date` (string)
+- `private_label_id` (int)
 
 ---
 
-## 3. Confluence Page Summaries
+### 3. Table YAML Metadata
 
-### 3.1 Product Price Catalog (page 3740008527)
-
-**Purpose**: Product Price Catalog is a daily snapshot of product list price, sale price, and domain cost for **all products, markets, and memberships** for both GoDaddy (private_label_id=1) and boutique resellers (e.g., 123 Reg, private_label_id=587240). It is a **superset of Product Price List** and will replace it after migration.
-
-**Key business context**:
-- Primary key: `(pf_id, price_group_id, price_type_id, trxn_currency_code, private_label_id, as_of_mst_date)`
-- `private_label_id` is the new composite key column: 1 = GoDaddy, 587240 = 123 Reg (boutique reseller)
-- For boutique resellers (`reseller_type_id = 14`): only GBP and USD currencies are included (reduced from 19.9M to 2.7M rows daily per requirement change in GDIIA-3470)
-- TSO was absorbed into 123 Reg (same pricing as 123 Reg customers) as of 2025-01-27
-- Source of truth for 123 Reg: `catalog_productPrivateLabelPrice`, with `catalog_productResellerTypePrice` as fallback
-
-**Filter logic applied**:
-- `gdmastercatalog.catalog_productprivatelabelprice.privatelabelid IN (1, 587240)`
-- `gdmastercatalog.catalog_productresellertypeprice.privatelabelresellertypeid IN (1, 14)`
-- `gdmastercatalog.catalog_productresellertype.privatelabelresellertypeid IN (1, 14)`
-- `gdmastercatalog.catalog_productresellertype.canbesold = 1`
-- `gdmastercatalog.catalog_countrysite.isactive = 1`
-- `gdmastercatalog.catalog_countrysite.defaultmarketid NOT IN ('zh-CN', 'en-AE', 'he-IL')`
-- Department exclusion: `department_id = 1690` (Marketplace 3rd Party Products) is excluded
-
-**price_group_id context**: Also known as "Server Group ID"; most of the time `price_group_name = country_site_code + country_site_desc`.
-
-**as_of_mst_date**: Partition column representing the snapshot date (MST) for the daily price data.
-
-**Cost data**: `cost_usd_amt` applies to **domain products only**, sourced from `gdshop_product`.
-
-**Schema columns from Confluence spec**:
-| Column | Notes |
-|---|---|
-| pf_id | PF ID (Primary key 1/6) |
-| product_name | Product name |
-| product_period_name | dim_product_snap.period |
-| product_period_qty | dim_product_snap.numberofperiods |
-| product_pnl_group_name | e.g., Domains |
-| product_pnl_category_name | e.g., Domain Registration |
-| product_pnl_line_name | e.g., Domain Name Registration |
-| product_pnl_subline_name | e.g., COM |
-| product_pnl_version_name | e.g., COM |
-| product_pnl_new_renewal_name | e.g., New Purchase |
-| department_id | Include dept_id=0; exclude dept_id=1690 |
-| department_name | e.g., Domain Names - Godaddy.com |
-| price_group_id | Primary key 2/6; also known as "Server Group ID" |
-| price_group_name | Default (most often = country_site_code + country_site_desc) |
-| country_site_code | e.g., www, br, fr |
-| country_site_name | e.g., Global US |
-| default_market_code | e.g., en-US |
-| price_type_id | Primary key 3/6 |
-| private_label_id | Primary key (new); 1=GoDaddy, 587240=123 Reg |
-| trxn_currency_code | Primary key 5/6 |
-| as_of_mst_date | Primary key 6/6 (partition) |
-
-### 3.2 Product Price List (page 3354394625) — Reference/Predecessor Table
-
-**Purpose**: Predecessor table covering GoDaddy-only product list price, sale price, and domain cost. Key difference from product_price_catalog: only `private_label_id = 1` (GoDaddy) and `reseller_type_id = 1`.
-
-**Key context**:
-- `price_type_id` represents customer membership (also known as "Variant Price Type"), pivoted to one row per price type
-- `usd_conversion_rate` = Conversion Rate × 10 (Decimal Precision) / 1,000,000
-- Sale price validity: `Price New Sale Expiration Date > NOW()`
-- Domain cost: only for products with `Product Namespace = 'domains'`
+- **Description:** "This table captures product price information"
+- **Upstream dependencies (lineage):** bigreporting.dim_product_snap, godaddy.gdshop_currencytype_snap, godaddy.gdshop_currencytypeconversionrate_snap, godaddy.gdshop_dept_snap, godaddy.gdshop_product_snap, godaddy.gdshop_product_type_snap, godaddy.gdshop_variant_price_type_snap, gdmastercatalog.catalog_countrysite_snap, gdmastercatalog.catalog_pricegroup_snap, gdmastercatalog.catalog_productprivatelabelprice_snap, gdmastercatalog.catalog_productprivatelabelpricesale_snap, gdmastercatalog.catalog_productresellertypeprice_snap, gdmastercatalog.catalog_productresellertype_snap, godaddy.pl_resellertype_snap, godaddy.pl_signupinfo_snap
 
 ---
 
-## 4. Alation Metadata
+### 4. Confluence Page Summaries
 
-### 4.1 Target Table (id=7010676, ds_id=81, AwsDataCatalog.pricing_mart)
+#### 4a. Product Price Catalog (page 3740008527)
 
-**Table description (Alation)**: "Product Price Catalog provides a daily snapshot of GoDaddy's & 123 Reg's product list price, sale price and cost (domain product only) for all products, markets, currencies and membership price types."
+**Purpose:** Successor to `product_price_list`, extends it with boutique reseller support (123 Reg). A daily snapshot of product list price, sale price, and domain cost for all products, markets, currencies, and membership price types — for both GoDaddy (private_label_id=1) and 123 Reg (private_label_id=587240, reseller_type_id=14).
 
-**Column metadata** (column_comment = DDL Source Comment; description = user-authored):
+**Primary Key (6/6):** `(pf_id, price_group_id, price_type_id, trxn_currency_code, private_label_id, as_of_mst_date)`
 
-| Column | Alation Title | column_comment (Source) | description (User) |
-|---|---|---|---|
-| pf_id | The pf_id of a product | @PrimaryKey Product identifier, composite key with price_type_id, price_group_id, private_label_id, and trxn_currency_code | (empty) |
-| price_type_id | Price Type ID. Also known as customer membership. | @PrimaryKey Identifier for the price type as 0, 1, 2, 4, 8, 16, 32, 64, 128 or 256 | (empty) |
-| price_group_id | Price Group ID (related to Country site / Market) | @PrimaryKey Identifier for the price group, integer range from 0 to 34 | (empty) |
-| private_label_id | Private Label ID (aka Reseller ID) | (empty) | (empty) |
-| as_of_mst_date | As of Date in MST Time Zone | (empty) | (empty) |
-| reseller_type_id | Reseller Type ID | Identifier for the reseller type, 1 - Go Daddy, 14 - Boutique Resellers | (empty) |
-| reseller_name | Reseller Name | Name of the reseller, GoDaddy.com vs 123 Reg | (empty) |
-| reseller_type_name | (empty) | Name of the reseller type, Go Daddy vs Boutique Resellers | (empty) |
-| department_id | Department ID | Identifier for the department associated with the product | (empty) |
-| product_name | (empty) | Name of the product | (empty) |
-| product_period_name | (empty) | @Enumerated(month,quarter,6-month,year,onetime) Name of the product subscription period | (empty) |
-| product_period_qty | (empty) | Number of units in the product period (e.g., 12 for a 12-period term) | (empty) |
-| product_pnl_group_name | Product PnL Group Name | Profit and Loss group name for financial reporting | (empty) |
-| product_pnl_category_name | Product PnL Category Name | Profit and Loss category name for financial reporting | (empty) |
-| product_pnl_line_name | Product PnL Line Name | Profit and Loss line name for financial reporting | (empty) |
-| product_pnl_subline_name | Product PnL Subline Name | Profit and Loss subline name for financial reporting | (empty) |
-| product_pnl_version_name | Product PnL Version Name | Profit and Loss version name for financial reporting | (empty) |
-| product_pnl_new_renewal_name | Product PnL New Purchase or Renewal Name | Profit and Loss new versus renewal classification name | (empty) |
-| department_name | (empty) | Name of the department associated with the product | (empty) |
-| price_group_name | (empty) | Descriptive name of the price group | (empty) |
-| country_site_code | (empty) | Country site code | (empty) |
-| country_site_name | (empty) | Country site name | (empty) |
-| default_market_code | Default Market Code | Default market locale code (e.g., en-US, en-GB) | (empty) |
-| price_type_name | (empty) | Descriptive name of the price type, such as Standard Price, Costco, Employee Discount, etc | (empty) |
-| trxn_currency_code | Transaction Currency Code | @PrimaryKey ISO 4217 currency code for the transaction currency | (empty) |
-| usd_conversion_rate | Transaction Currency to USD Exchange Rate | Exchange rate used to convert transaction currency to US dollars | (empty) |
-| list_price_trxn_amt | List Price Amount in Transaction Currency | List price of the product in transaction currency | (empty) |
-| list_price_usd_amt | List Price Amount in USD | List price of the product converted to US dollars | (empty) |
-| sale_price_trxn_amt | Sale Price Amount in Transaction Currency | Promotional or discounted sale price in transaction currency | (empty) |
-| sale_price_usd_amt | Sale Price Amount in USD | Promotional or discounted sale price converted to US dollars | (empty) |
-| sale_start_mst_date | Sale Start Date in MST Time Zone | Start date of the sale period (MST) | (empty) |
-| sale_end_mst_date | Sale End Date in MST Time Zone | End date of the sale period (MST) | (empty) |
-| cost_usd_amt | Cost Amount in USD (Domain Product only) | Cost of the product in US dollars | (empty) |
-| list_price_change_flag | (empty) | Indicates whether the list price changed compared to the prior period (true/false) | (empty) |
-| sale_price_change_flag | (empty) | Indicates whether the sale price changed compared to the prior period (true/false) | (empty) |
-| cost_change_flag | (empty) | Indicates whether the cost changed compared to the prior period (true/false) | (empty) |
-| etl_build_mst_ts | ETL Build Mst Timestamp | Timestamp when the ETL process created or last updated this record (MST) | (empty) |
+**Key business rules from Confluence:**
+- `pf_id`: Product Family ID. Filters applied: catalog_productprivatelabelprice.privatelabelid IN (1,587240); catalog_productresellertypeprice.privatelabelresellertypeid IN (1,14); catalog_productresellertype.canbesold = 1
+- `price_group_id`: Also known as "Server Group ID". Range 0–34.
+- `price_group_name`: Most of the time, price_group_name = country_site_code + country_site_desc
+- `country_site_code`: Filters: catalog_countrysite.isactive=1; defaultmarketid NOT IN ('zh-CN','en-AE','he-IL')
+- `price_type_id`: Values 0,1,2,4,8,16,32,64,128,256 (per gdshop_variant_price_type). Example: 8 = Domain Discount Club
+- `trxn_currency_code`: For boutique resellers (reseller_type_id=14), only GBP and USD are included
+- `usd_conversion_rate`: Conversion rate from transaction currency to USD. Note: The Pricing Tool's "Exchange Rate" is the INVERSE (USD to transaction currency)
+- `reseller_name`: Identifier is private_label_id (e.g., GoDaddy, 123 Reg). 123 Reg is currently the only active boutique reseller (reseller_type_id=14; PLID=587240); TSO was absorbed into 123 Reg as of 2025-01-27
+- `department_id`: Include department_id=0 (not in lookup table); exclude department_id=1690 (Marketplace 3rd Party Products)
+- `list_price_change_flag`: True if list_price_trxn_amt changed compared to PREVIOUS as_of_mst_date
+- `sale_price_change_flag`: True if sale_price_trxn_amt changed compared to PREVIOUS as_of_mst_date
+- `cost_change_flag`: True if cost_usd_amt changed compared to PREVIOUS as_of_mst_date
+- `cost_usd_amt`: Domain products only; NULL for non-domain products
+- `sale_start_mst_date` / `sale_end_mst_date`: Time part is always 00:00:00.000 in source table
+- `as_of_mst_date`: As of date in YYYY-MM-DD format (Primary key 6/6), partition key
+- `private_label_id`: Private label ID (5/6), partition key. Currently either 1 (GoDaddy) or 587240 (123 Reg). In the future, may include additional boutique reseller PLIDs
 
-### 4.2 Reference Table: product_price_list (id=6636972, ds_id=81)
-
-**Table description (Alation)**: "Product Price List provides a daily snapshot of product list price, sale price and cost (domain product only) for all products, markets, currencies and membership price types."
-
-**Column metadata**: All columns have empty `description` and `column_comment` fields in Alation. No enrichment data available from reference table. The target table (product_price_catalog) already has more complete column annotations in its DDL than the reference table.
-
----
-
-## 5. Certified Data Dictionary Mappings
-
-Total documents in folder 6: 200 (pages 1-4, 50 each)
-
-Abbreviations appearing in target table column names:
-
-| Abbreviation | Official Name | Document ID | Source |
-|---|---|---|---|
-| PnL | Profit and Loss (via "PnL Pillar Name") | 84 | Doc title "PnL Pillar Name"; body confirms "5 PnLs: USI PnL Pillar GCR, GDII PnL Pillar GCR..." |
-| GCR | Gross Cash Receipts | 6 | Doc title "Gross Cash Receipts (GCR)" |
-| trxn | transaction | (not in dictionary) | Standard abbreviation; used in DDL as "transaction currency" |
-| MST | Mountain Standard Time | (not in dictionary) | Standard timezone abbreviation used throughout GoDaddy data |
-| ETL | Extract, Transform, Load | (not in dictionary) | Standard data engineering term |
-| amt | amount | (not in dictionary) | Standard abbreviation |
-| USD | United States Dollar | (not in dictionary) | ISO 4217 standard currency code |
-| ISO 4217 | International Organization for Standardization currency code standard | (not in dictionary) | International standard |
-| COGS | Cost of Goods Sold | 132 | Doc title "Cost of Goods Sold (COGS)" |
-
-Note: `PnL` = "Profit and Loss" is confirmed by official dictionary entry 84. All `product_pnl_*` columns already use "Profit and Loss" in their existing DDL comments, which is correct.
-
----
-
-## 6. Per-Column Analysis for Enrichment
-
-### Columns with EMPTY DDL comments (partition keys — need new comments):
-
-#### `private_label_id` (partition key, int)
-- **Current DDL comment**: (none)
-- **Alation column_comment**: (empty)
-- **Alation title**: "Private Label ID (aka Reseller ID)"
-- **Confluence context**: New composite key column. Distinguishes GoDaddy (PLID=1) from boutique resellers (123 Reg PLID=587240). Sourced from `gdmastercatalog.catalog_productprivatelabelprice.privatelabelid IN (1, 587240)`. As of 2025, only two active values: 1 (GoDaddy) and 587240 (123 Reg, which absorbed TSO).
-- **Recommended comment**: `@PrimaryKey Private label identifier (reseller brand), composite key with pf_id, price_type_id, price_group_id, and trxn_currency_code; 1 = GoDaddy, 587240 = 123 Reg (boutique reseller)`
-
-#### `as_of_mst_date` (partition key, string)
-- **Current DDL comment**: (none in DDL body; it's a partition key)
-- **Alation column_comment**: (empty)
-- **Alation title**: "As of Date in MST Time Zone"
-- **Confluence context**: The date for which the daily snapshot of product prices is valid. Each daily partition represents a point-in-time snapshot. Partition column.
-- **Recommended comment**: `@PrimaryKey @PartitionKey Snapshot date (MST) for which the product price data is valid; partition column enabling daily price history tracking`
-
-### Columns with EXISTING DDL comments (verify & potentially enhance):
-
-#### `pf_id`
-- **Current DDL**: `@PrimaryKey Product identifier, composite key with price_type_id, price_group_id, private_label_id, and trxn_currency_code`
-- **Analysis**: Good. The `@PrimaryKey` annotation is correct. The composite key description is accurate per Confluence (primary key includes `private_label_id` and `as_of_mst_date` per spec). The comment says "composite key with price_type_id, price_group_id, private_label_id, and trxn_currency_code" which is accurate but omits `as_of_mst_date` (which is the partition key). This is by design — it documents the non-partition composite key columns.
-- **Status**: Adequate as-is, well-annotated.
-
-#### `price_type_id`
-- **Current DDL**: `@PrimaryKey Identifier for the price type as 0, 1, 2, 4, 8, 16, 32, 64, 128 or 256`
-- **Alation title**: "Price Type ID. Also known as customer membership."
-- **Analysis**: The Alation title adds important context: "Also known as customer membership." This is confirmed by the Confluence page. The enum values (0-256) are already documented.
-- **Enhancement**: Add "also known as customer membership" to the comment.
-- **Recommended**: `@PrimaryKey Identifier for the price type (also known as customer membership), valid values: 0, 1, 2, 4, 8, 16, 32, 64, 128 or 256`
-
-#### `price_group_id`
-- **Current DDL**: `@PrimaryKey Identifier for the price group, integer range from 0 to 34`
-- **Alation title**: "Price Group ID (related to Country site / Market)"
-- **Confluence context**: Also known as "Server Group ID". Typically corresponds to a country site or market.
-- **Enhancement**: Add "also known as Server Group ID; related to country site and market".
-- **Recommended**: `@PrimaryKey Identifier for the price group (also known as Server Group ID), integer range from 0 to 34; related to country site and market`
-
-#### `reseller_type_id`
-- **Current DDL**: `Identifier for the reseller type, 1 - Go Daddy, 14 - Boutique Resellers`
-- **Analysis**: Good. Accurate enum values from Confluence.
-- **Status**: Adequate as-is.
-
-#### `reseller_name`
-- **Current DDL**: `Name of the reseller, GoDaddy.com vs 123 Reg`
-- **Alation title**: "Reseller Name"
-- **Analysis**: Good. Examples are accurate.
-- **Status**: Adequate as-is.
-
-#### `reseller_type_name`
-- **Current DDL**: `Name of the reseller type, Go Daddy vs Boutique Resellers`
-- **Analysis**: Good. Examples are accurate.
-- **Status**: Adequate as-is.
-
-#### `department_id`
-- **Current DDL**: `Identifier for the department associated with the product`
-- **Confluence context**: Include `department_id = 0` (not in department lookup); exclude `department_id = 1690` (Marketplace 3rd Party Products). Sourced from `gdshop_dept`.
-- **Enhancement**: Add note about exclusion of dept 1690.
-- **Recommended**: `Identifier for the department associated with the product; department_id=1690 (Marketplace 3rd Party Products) is excluded`
-
-#### `product_name`
-- **Current DDL**: `Name of the product`
-- **Confluence example**: ".COM Domain Name Registration - 1 Year (recurring)"
-- **Status**: Concise and adequate as-is.
-
-#### `product_period_name`
-- **Current DDL**: `@Enumerated(month,quarter,6-month,year,onetime) Name of the product subscription period`
-- **Analysis**: Well-annotated with `@Enumerated` annotation listing valid values.
-- **Status**: Adequate as-is.
-
-#### `product_period_qty`
-- **Current DDL**: `Number of units in the product period (e.g., 12 for a 12-period term)`
-- **Confluence source**: `dim_product_snap.numberofperiods`
-- **Status**: Adequate as-is.
-
-#### `product_pnl_group_name`
-- **Current DDL**: `Profit and Loss group name for financial reporting`
-- **Confluence example**: "Domains"
-- **Status**: Adequate as-is. "Profit and Loss" is the correct expansion per the Data Dictionary (PnL = Profit and Loss, doc 84).
-
-#### `product_pnl_category_name`
-- **Current DDL**: `Profit and Loss category name for financial reporting`
-- **Confluence example**: "Domain Registration"
-- **Status**: Adequate as-is.
-
-#### `product_pnl_line_name`
-- **Current DDL**: `Profit and Loss line name for financial reporting`
-- **Confluence example**: "Domain Name Registration"
-- **Status**: Adequate as-is.
-
-#### `product_pnl_subline_name`
-- **Current DDL**: `Profit and Loss subline name for financial reporting`
-- **Confluence example**: "COM"
-- **Status**: Adequate as-is.
-
-#### `product_pnl_version_name`
-- **Current DDL**: `Profit and Loss version name for financial reporting`
-- **Confluence example**: "COM"
-- **Status**: Adequate as-is.
-
-#### `product_pnl_new_renewal_name`
-- **Current DDL**: `Profit and Loss new versus renewal classification name`
-- **Confluence example**: "New Purchase"
-- **Status**: Adequate as-is.
-
-#### `department_name`
-- **Current DDL**: `Name of the department associated with the product`
-- **Confluence example**: "Domain Names - Godaddy.com"
-- **Status**: Adequate as-is.
-
-#### `price_group_name`
-- **Current DDL**: `Descriptive name of the price group`
-- **Confluence context**: "Most of the time price_group_name = country_site_code + country_site_desc"; most common value is "Default"
-- **Enhancement**: Add contextual note.
-- **Recommended**: `Descriptive name of the price group (also known as Server Group); typically corresponds to country_site_code combined with country site description (e.g., Default)`
-
-#### `country_site_code`
-- **Current DDL**: `Country site code`
-- **Confluence examples**: `www`, `br`, `fr`
-- **Confluence context**: Filtered to active country sites (`isactive = 1`), excluding `defaultmarketid` in ('zh-CN', 'en-AE', 'he-IL')
-- **Enhancement**: Add examples.
-- **Recommended**: `Country site code identifying the market storefront (e.g., www for Global US, br for Brazil, fr for France)`
-
-#### `country_site_name`
-- **Current DDL**: `Country site name`
-- **Confluence examples**: "Global US"
-- **Enhancement**: Add examples.
-- **Recommended**: `Descriptive name of the country site (e.g., Global US)`
-
-#### `default_market_code`
-- **Current DDL**: `Default market locale code (e.g., en-US, en-GB)`
-- **Status**: Adequate as-is. Good examples included.
-
-#### `price_type_name`
-- **Current DDL**: `Descriptive name of the price type, such as Standard Price, Costco, Employee Discount, etc`
-- **Status**: Adequate as-is. Good examples included.
-
-#### `trxn_currency_code`
-- **Current DDL**: `@PrimaryKey ISO 4217 currency code for the transaction currency`
-- **Confluence context**: For boutique resellers (reseller_type_id=14), only GBP and USD are included.
-- **Status**: Good as-is. The `@PrimaryKey` annotation and ISO 4217 reference are accurate.
-
-#### `usd_conversion_rate`
-- **Current DDL**: `Exchange rate used to convert transaction currency to US dollars`
-- **Confluence context**: Sourced from `gdshop_currencyTypeConversionRate`; formula: `usd_conversion_rate = Conversion Rate × 10 (Decimal Precision) / 1,000,000`
-- **Alation title**: "Transaction Currency to USD Exchange Rate"
-- **Status**: Adequate as-is.
-
-#### `list_price_trxn_amt`
-- **Current DDL**: `List price of the product in transaction currency`
-- **Alation title**: "List Price Amount in Transaction Currency"
-- **Confluence context**: Sourced from `catalog_productPrivateLabelPrice` (SOT) and `catalog_productResellerTypePrice` (fallback)
-- **Status**: Adequate as-is.
-
-#### `list_price_usd_amt`
-- **Current DDL**: `List price of the product converted to US dollars`
-- **Status**: Adequate as-is.
-
-#### `sale_price_trxn_amt`
-- **Current DDL**: `Promotional or discounted sale price in transaction currency`
-- **Alation title**: "Sale Price Amount in Transaction Currency"
-- **Confluence context**: Sourced from `catalog_productPrivateLabelPriceSale`; only includes active sales (expiration date > NOW())
-- **Status**: Adequate as-is.
-
-#### `sale_price_usd_amt`
-- **Current DDL**: `Promotional or discounted sale price converted to US dollars`
-- **Status**: Adequate as-is.
-
-#### `sale_start_mst_date`
-- **Current DDL**: `Start date of the sale period (MST)`
-- **Alation title**: "Sale Start Date in MST Time Zone"
-- **Status**: Adequate as-is.
-
-#### `sale_end_mst_date`
-- **Current DDL**: `End date of the sale period (MST)`
-- **Alation title**: "Sale End Date in MST Time Zone"
-- **Status**: Adequate as-is.
-
-#### `cost_usd_amt`
-- **Current DDL**: `Cost of the product in US dollars`
-- **Alation title**: "Cost Amount in USD (Domain Product only)"
-- **Confluence context**: Cost data applies to **domain products only** (`Product Namespace = 'domains'` filter applied in ETL). Sourced from `gdshop_product`.
-- **Enhancement**: Add domain-product-only restriction.
-- **Recommended**: `Cost of the product in US dollars (domain products only; null for non-domain products)`
-
-#### `list_price_change_flag`
-- **Current DDL**: `Indicates whether the list price changed compared to the prior period (true/false)`
-- **Status**: Adequate as-is.
-
-#### `sale_price_change_flag`
-- **Current DDL**: `Indicates whether the sale price changed compared to the prior period (true/false)`
-- **Status**: Adequate as-is.
-
-#### `cost_change_flag`
-- **Current DDL**: `Indicates whether the cost changed compared to the prior period (true/false)`
-- **Status**: Adequate as-is.
-
-#### `etl_build_mst_ts`
-- **Current DDL**: `Timestamp when the ETL process created or last updated this record (MST)`
-- **Status**: Adequate as-is.
-
----
-
-## 7. Summary of Recommended Changes
-
-The DDL already has high-quality comments for most columns. The following changes are recommended:
-
-| Column | Change Type | Action |
+**Source tables in eComm / Data Lake:**
+| # | eComm | Data Lake |
 |---|---|---|
-| `private_label_id` | ADD (missing) | Add primary key annotation with enum values |
-| `as_of_mst_date` | ADD (missing) | Add primary/partition key description |
-| `price_type_id` | ENHANCE | Add "also known as customer membership" |
-| `price_group_id` | ENHANCE | Add "also known as Server Group ID" |
-| `department_id` | ENHANCE | Add exclusion note for dept 1690 |
-| `price_group_name` | ENHANCE | Add context about Server Group and typical format |
-| `country_site_code` | ENHANCE | Add examples (www, br, fr) |
-| `country_site_name` | ENHANCE | Add example (Global US) |
-| `cost_usd_amt` | ENHANCE | Add "domain products only" restriction |
+| 1 | gdMasterCatalog.dbo.catalog_productPrivateLabelPrice | gdmastercatalog.catalog_productprivatelabelprice_snap |
+| 2 | gdMasterCatalog.dbo.catalog_productPrivateLabelPriceSales | gdmastercatalog.catalog_productprivatelabelpricesale_snap |
+| 3 | gdMasterCatalog.dbo.catalog_productResellerTypePrice | gdmastercatalog.catalog_productresellertypeprice_snap |
+| 4 | gdMasterCatalog.dbo.catalog_productResellerType | gdmastercatalog.catalog_productresellertype_snap |
+| 5 | gdMasterCatalog.dbo.catalog_countrySite | gdmastercatalog.catalog_countrysite_snap |
+| 6 | gdMasterCatalog.dbo.catalog_priceGroup | gdmastercatalog.catalog_pricegroup_snap |
+| 7 | GoDaddy.dbo.gdshop_currencyTypeConversionRate | godaddy.gdshop_currencytypeconversionrate_snap |
+| 8 | GoDaddy.dbo.gdshop_currencyType | godaddy.gdshop_currencytype_snap |
+| 9 | GoDaddy.dbo.gdshop_product | godaddy.gdshop_product_snap |
+| 10 | GoDaddy.dbo.gdshop_product_type | godaddy.gdshop_product_type_snap |
+| 11 | GoDaddy.dbo.gdshop_dept | godaddy.gdshop_dept_snap |
+| 12 | GoDaddy.dbo.gdshop_variant_price_type | godaddy.gdshop_variant_price_type_snap |
+| 13 | DMStaging.dbo.dim_product | bigreporting.dim_product_snap |
+| 14 | GoDaddy.dbo.pl_signupInfo | godaddy.pl_signupinfo_snap |
+| 15 | GoDaddy.dbo.pl_resellerType | godaddy.pl_resellertype_snap |
 
-All other 26 columns have adequate comments that already meet the standard and should be preserved as-is.
+#### 4b. Product Price List (page 3354394625) — Predecessor Table
+
+**Purpose:** Predecessor table (GoDaddy-only, private_label_id=1). A daily snapshot of product list price, sale price, and domain cost for all products, markets, currencies, and membership price types. Primary key (5/5): (pf_id, price_group_id, price_type_id, trxn_currency_code, as_of_mst_date).
+
+**Key additional details from predecessor table:**
+- `product_period_qty`: Source field: dim_product_snap.numberofperiods
+- `product_period_name`: Source field: dim_product_snap.period
+- `price_group_name`: Also known as "Server Group ID"
+- `cost_usd_amt`: Domain products only (Product Namespace = 'domains' filter); NULL for non-domain products
+- `usd_conversion_rate`: Calculated as: Conversion Rate * 10 (Decimal Precision) / 1,000,000 from gdshop_currencyTypeConversionRate
+- `sale_start_mst_date` / `sale_end_mst_date`: Time part always 00:00:00.000 in source
+
+---
+
+### 5. Alation Catalog Data
+
+#### 5a. Target Table (product_price_catalog, id=7010676)
+
+- All column descriptions (`description`) are empty in Alation
+- `column_comment` fields match current DDL COMMENT clauses exactly (propagated from DDL)
+- Two columns have empty `column_comment`:
+  - `as_of_mst_date` (partition key)
+  - `private_label_id` (partition key)
+
+#### 5b. Reference Table (pricing_mart.product_price_list, id=6636972)
+
+- All Alation `description` and `column_comment` fields are empty
+- Alation `title` fields provide concise labels (e.g., "PF ID (Primary key 1/5)", "Price type ID (Primary key 3/5)", "Sale start date in MST timezone")
+- No distinct enrichment beyond what is in the Confluence schema table
+
+---
+
+### 6. Certified Data Dictionary Mappings (Folder ID 6)
+
+Reviewed all 200 dictionary entries. Terms relevant to this table's column names:
+
+| Abbreviation/Term | Official Name (Dictionary) | Document ID | Notes |
+|---|---|---|---|
+| PnL | Profit and Loss | 84 ("PnL Pillar Name") | Column names use full "Profit and Loss" already; `pnl` in column names is the abbreviated form |
+| Product Hierarchy | Product Hierarchy (aka PnL Hierarchy) | 93 | 5-level hierarchy: group → category → line → subline → version; source: bigreporting.dim_product_snap |
+| Reseller / Private Label | Reseller and Reseller Clients | 21 | Private label ID uniquely identifies a reseller; reseller_type_id groups them |
+| GCR | Gross Cash Receipts | 6 | **Not in this table's columns** — included for completeness |
+| COGS | Cost of Goods Sold | 132 | Aligns with cost_usd_amt (domain products only) |
+| pf_id | Product Family Identifier (PF_ID) | 93 | Official term from Product Hierarchy entry |
+
+**Key dictionary definitions used:**
+- **Product Hierarchy (id 93):** "Product Hierarchy (aka PnL Hierarchy) is the classification of products and services at the Product Family Identifier (PF_ID) level by their essential components into a logical structure across five key attributes." Source: `bigreporting.dim_product_snap`. The 5 attributes map directly to `product_pnl_group_name`, `product_pnl_category_name`, `product_pnl_line_name`, `product_pnl_subline_name`, `product_pnl_version_name`.
+- **Reseller and Reseller Clients (id 21):** "GoDaddy allows some of its products and services to be sold by other entities, called Resellers, under their own brands... products manufactured by one company for sale under another company's brand are called 'private label'... Resellers are customers who purchase a Reseller plan, which provides them with a private label ID — a unique identifier"
+
+---
+
+### 7. Per-Column Analysis & Enrichment Candidates
+
+| Column | Current DDL Comment | Enrichment Source | Proposed Enhancement |
+|---|---|---|---|
+| `pf_id` | `@PrimaryKey Product identifier, composite key with price_type_id, price_group_id, private_label_id, and trxn_currency_code` | Confluence schema table | Already good; expand "Product identifier" → "Product Family Identifier (PF_ID)" per data dictionary |
+| `price_type_id` | `@PrimaryKey Identifier for the price type as 0, 1, 2, 4, 8, 16, 32, 64, 128 or 256` | Confluence, Alation | Add source reference: gdshop_variant_price_type |
+| `price_group_id` | `@PrimaryKey Identifier for the price group, integer range from 0 to 34` | Confluence | Add alias: also known as "Server Group ID" |
+| `reseller_type_id` | `Identifier for the reseller type, 1 - Go Daddy, 14 - Boutique Resellers` | Confluence | Already complete |
+| `reseller_name` | `Name of the reseller, GoDaddy.com vs 123 Reg` | Confluence | Add: identified by private_label_id |
+| `reseller_type_name` | `Name of the reseller type, Go Daddy vs Boutique Resellers` | Confluence | Already complete |
+| `department_id` | `Identifier for the department associated with the product` | Confluence | Add: includes 0; excludes 1690 (Marketplace 3rd Party Products) |
+| `product_name` | `Name of the product` | Confluence | Add example |
+| `product_period_name` | `@Enumerated(month,quarter,6-month,year,onetime) Name of the product subscription period` | Confluence | Add source: dim_product_snap.period |
+| `product_period_qty` | `Number of units in the product period (e.g., 12 for a 12-period term)` | Confluence | Add source: dim_product_snap.numberofperiods |
+| `product_pnl_group_name` | `Profit and Loss group name for financial reporting` | Dict ID 93 | Add: top-level tier of product hierarchy per bigreporting.dim_product_snap; example: "Domains" |
+| `product_pnl_category_name` | `Profit and Loss category name for financial reporting` | Dict ID 93 | Add: second tier of product hierarchy; example: "Domain Registration" |
+| `product_pnl_line_name` | `Profit and Loss line name for financial reporting` | Dict ID 93 | Add: third tier of product hierarchy; example: "Domain Name Registration" |
+| `product_pnl_subline_name` | `Profit and Loss subline name for financial reporting` | Dict ID 93 | Add: fourth tier of product hierarchy; example: "COM" |
+| `product_pnl_version_name` | `Profit and Loss version name for financial reporting` | Dict ID 93 | Add: fifth (most granular) tier of product hierarchy; example: "COM" |
+| `product_pnl_new_renewal_name` | `Profit and Loss new versus renewal classification name` | Confluence | Add example: "New Purchase" |
+| `department_name` | `Name of the department associated with the product` | Confluence | Add example |
+| `price_group_name` | `Descriptive name of the price group` | Confluence | Add: also known as Server Group ID; typically country_site_code + country_site_desc; example: "Default" |
+| `country_site_code` | `Country site code` | Confluence | Add: active country sites only; excludes zh-CN, en-AE, he-IL markets; example: "www", "br", "fr" |
+| `country_site_name` | `Country site name` | Confluence | Add example: "Global", "US" |
+| `default_market_code` | `Default market locale code (e.g., en-US, en-GB)` | Confluence | Already good |
+| `price_type_name` | `Descriptive name of the price type, such as Standard Price, Costco, Employee Discount, etc` | Confluence | Already good |
+| `trxn_currency_code` | `@PrimaryKey ISO 4217 currency code for the transaction currency` | Confluence | Add: boutique resellers (reseller_type_id=14) only include USD and GBP |
+| `usd_conversion_rate` | `Exchange rate used to convert transaction currency to US dollars` | Confluence | Add important note: the Pricing Tool "Exchange Rate" is the inverse (USD to transaction currency); sourced from gdshop_currencytypeconversionrate_snap |
+| `list_price_trxn_amt` | `List price of the product in transaction currency` | Confluence | Add: source is catalog_productprivatelabelprice_snap / catalog_productresellertypeprice_snap |
+| `list_price_usd_amt` | `List price of the product converted to US dollars` | Confluence | Already good |
+| `sale_price_trxn_amt` | `Promotional or discounted sale price in transaction currency` | Confluence | Add: applies to all customers without a coupon |
+| `sale_price_usd_amt` | `Promotional or discounted sale price converted to US dollars` | Confluence | Already good |
+| `sale_start_mst_date` | `Start date of the sale period (MST)` | Confluence | Add: time component is always 00:00:00; source: catalog_productprivatelabelpricesale_snap |
+| `sale_end_mst_date` | `End date of the sale period (MST)` | Confluence | Add: time component is always 00:00:00; source: catalog_productprivatelabelpricesale_snap |
+| `cost_usd_amt` | `Cost of the product in US dollars` | Confluence | Add: domain products only (Product Namespace = 'domains'); NULL for non-domain products |
+| `list_price_change_flag` | `Indicates whether the list price changed compared to the prior period (true/false)` | Confluence | Refine: "prior period" → "previous as_of_mst_date"; "list_price_trxn_amt" compared |
+| `sale_price_change_flag` | `Indicates whether the sale price changed compared to the prior period (true/false)` | Confluence | Refine: "prior period" → "previous as_of_mst_date"; "sale_price_trxn_amt" compared |
+| `cost_change_flag` | `Indicates whether the cost changed compared to the prior period (true/false)` | Confluence | Refine: "prior period" → "previous as_of_mst_date"; "cost_usd_amt" compared |
+| `etl_build_mst_ts` | `Timestamp when the ETL process created or last updated this record (MST)` | — | Already good |
+| `as_of_mst_date` | **(MISSING — partition key)** | Confluence | Add: @PrimaryKey snapshot date in YYYY-MM-DD format; primary key 6/6; partition column |
+| `private_label_id` | **(MISSING — partition key)** | Confluence, Dict ID 21 | Add: @PrimaryKey private label identifier (primary key 5/6); 1=GoDaddy, 587240=123 Reg; partition column |
+
+---
+
+### 8. Summary of Findings
+
+The DDL already has well-formed comments for 35 of 37 columns. The two partition key columns (`as_of_mst_date` and `private_label_id`) have no COMMENT clauses and must be added.
+
+Enrichment opportunities across all columns:
+1. **Missing comments** (critical): `as_of_mst_date`, `private_label_id`
+2. **Minor precision improvements**: `list_price_change_flag`, `sale_price_change_flag`, `cost_change_flag` — change "prior period" to "previous as_of_mst_date" to be unambiguous
+3. **Cost column**: Add domain-only restriction and NULL semantics
+4. **Sale dates**: Add note that time part is always 00:00:00
+5. **usd_conversion_rate**: Add clarification about direction vs Pricing Tool convention
+6. **pf_id**: Expand "Product identifier" to "Product Family Identifier (PF_ID)" per official data dictionary
+7. **price_group_id**: Add "also known as Server Group ID" per Confluence
+8. **country_site_code/name**: Add examples from Confluence
+9. **product_pnl_* columns**: Add source (bigreporting.dim_product_snap) and examples from Confluence
+10. **department_id**: Add exclusion note for department_id=1690
 
 
 **The agent's final response to the user was:**
-The research is complete. Here's a summary of what I found and documented:
+The research document has been written. Here is a summary of what I found:
 
-## Research Summary
+---
 
-**Target**: `pricing_mart.product_price_catalog` — a daily snapshot table of product list prices, sale prices, and domain costs for GoDaddy and 123 Reg (boutique reseller) across all products, markets, currencies, and membership price types.
+## Research Summary — `pricing_mart.product_price_catalog`
 
-### Key Findings
+**Sources consulted:**
+- DDL and YAML from `repos/lake/` (35/37 columns have existing comments)
+- Confluence page 3740008527 (Product Price Catalog design spec)
+- Confluence page 3354394625 (Product Price List predecessor design doc)
+- Alation table 7010676 (target table metadata + column_comments)
+- Alation table 6636972 (reference table `product_price_list`)
+- Alation Certified Data Dictionary (200 entries, folder ID 6)
 
-**Table structure**: 35 columns in DDL body + 2 partition keys (`private_label_id`, `as_of_mst_date`) that are **missing DDL comments** and need to be added.
+**Key findings:**
 
-**Confluence research** (pages 3740008527 & 3354394625):
-- Product Price Catalog is a **superset of Product Price List** (predecessor, GoDaddy-only)
-- New key differentiator: `private_label_id` — 1 = GoDaddy, 587240 = 123 Reg
-- `price_type_id` is also known as "customer membership"
-- `price_group_id` is also known as "Server Group ID"
-- `cost_usd_amt` applies to **domain products only**
-- For boutique resellers, only GBP and USD currencies are included
+1. **Two partition-key columns are entirely missing COMMENT clauses**: `as_of_mst_date` and `private_label_id` — both are primary key components (6/6 and 5/6 respectively).
 
-**Alation research** (target table id=7010676, reference table id=6636972):
-- Target table has good column_comments (DDL source comments) already
-- Reference table (product_price_list) has no column annotations in Alation
-- Alation titles provide enrichment context (e.g., "Price Type ID. Also known as customer membership.")
+2. **Alation has no user-authored descriptions** for any column in either the target or reference table; the `column_comment` fields simply mirror the existing DDL comments.
 
-**Certified Data Dictionary** (folder 6, 200 documents):
-- `PnL` = "Profit and Loss" (doc 84) — already correctly used in existing DDL comments
-- No other column-name abbreviations found in the official dictionary
-- `COGS` = "Cost of Goods Sold" (doc 132) — not directly used in column names
+3. **Certified Data Dictionary mappings** relevant to this table:
+   - `pf_id` = Product Family Identifier (PF_ID), per document ID 93
+   - Product Hierarchy (PnL hierarchy) = the 5 `product_pnl_*` columns; source: `bigreporting.dim_product_snap`
+   - Private label / Reseller = document ID 21 (explains `private_label_id`, `reseller_name`, `reseller_type_id`)
 
-**Recommended changes**: 9 columns need updates — 2 need new comments added (partition keys with empty comments), 7 need enhancement with additional context from Confluence and Alation metadata.
+4. **Enrichments from Confluence** available for: cost_usd_amt (domain-only/NULL semantics), usd_conversion_rate (direction clarification vs Pricing Tool), sale dates (time component is always 00:00:00), change flags (reference specific column names instead of "prior period"), price_group_id (alias "Server Group ID"), country_site_code (active filter + excluded markets), and department_id (exclusion of id=1690).

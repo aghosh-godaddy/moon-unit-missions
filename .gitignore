@@ -8,6 +8,10 @@ api-keys.txt
 .watcher.log
 .manifest.generated.yaml
 
+# Per-run scratch space (cloned repos, intermediate files; outputs are
+# copied out to output/<db>/<table>/ on completion)
+missions/column-comments/output/**/.workspace/
+
 # macOS
 .DS_Store
 

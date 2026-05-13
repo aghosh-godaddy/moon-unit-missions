@@ -1,6 +1,6 @@
 # Column Comments Comparison: pricing-mart.product-price-catalog
 
-Generated: 2026-05-11T19:55
+Generated: 2026-05-13T09:11
 
 | # | Column | Original | Enriched | Validated | Len |
 |---|--------|----------|----------|-----------|-----|
