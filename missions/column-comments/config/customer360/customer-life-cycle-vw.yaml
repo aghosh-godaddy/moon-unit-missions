@@ -20,9 +20,41 @@ confluence_pages:
   - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/3970861345/Customer+Lifecycle"
     description: "Customer Lifecycle design — lifecycle stages, transitions, and business logic for customer lifecycle view"
 
-# Successor/related tables whose column descriptions provide relevant context
-# The agent will look up these tables in Alation to extract existing column descriptions.
-reference_tables: []
+# Successor/related tables whose column descriptions provide relevant context.
+# The agent looks these up in Alation to extract existing column descriptions.
+reference_tables:
+  - name: "shopper_acquisition"
+    schema: "analytic_feature"
+    alation_table_id: 6300171
+    description: "Upstream dependency from data lake registry lineage — analytic_feature.shopper_acquisition: legacy-hive-shopper_acquisition"
+  - name: "customer_type_history"
+    schema: "analytic_feature"
+    alation_table_id: 6365364
+    description: "Upstream dependency from data lake registry lineage — analytic_feature.customer_type_history: migrated-customer_type_history"
+  - name: "shopper_account_detail"
+    schema: "analytic_feature"
+    alation_table_id: 6555393
+    description: "Upstream dependency from data lake registry lineage — analytic_feature.shopper_account_detail: shopper feature account detail table"
+  - name: "dim_new_acquisition_shopper"
+    schema: "enterprise"
+    alation_table_id: 6332252
+    description: "Upstream dependency from data lake registry lineage — enterprise.dim_new_acquisition_shopper: legacy-hive-dim_new_acquisition_shopper"
+  - name: "shopper_tenure"
+    schema: "analytic_feature"
+    alation_table_id: 6300179
+    description: "Upstream dependency from data lake registry lineage — analytic_feature.shopper_tenure: migrated-hive-shopper_tenure"
+  - name: "bill_line_traffic_ext"
+    schema: "ecomm_mart"
+    alation_table_id: 6951872
+    description: "Upstream dependency from data lake registry lineage — ecomm_mart.bill_line_traffic_ext: Analytic convenience denormalization of Bill Line and CSP Session Traffic."
+  - name: "customer_fraud"
+    schema: "analytic_feature"
+    alation_table_id: 6620297
+    description: "Upstream dependency from data lake registry lineage — analytic_feature.customer_fraud: fraud dataset on shopper_id level"
+  - name: "shopper_merge"
+    schema: "analytic_feature"
+    alation_table_id: 6295888
+    description: "Upstream dependency from data lake registry lineage — analytic_feature.shopper_merge: legacy-hive-shopper_merge"
 
 # Alation configuration (optional — enriches descriptions with catalog metadata)
 # Alation credentials (user_id, refresh_token, URL) are loaded from .env

@@ -1,0 +1,45 @@
+# Configuration for Column Comments Enrichment Mission
+# Edit this file before each run to specify the target table and reference materials.
+#
+# Alation: Free Entitlement (id=6276873)
+# Description: Enterprise dataset (EDS) used for checking free conversions to paid products
+
+# Target table location in the data lake registry
+target:
+  # Database name (e.g., "analytic", "customer360", "ecomm-cln")
+  db_name: "enterprise"
+  # Table name (e.g., "ads-bill-line", "cdl-current")
+  table_name: "free-entitlement"
+  # Registry path variant: "standard" or "dlms-api"
+  #   standard: catalog/config/prod/us-west-2/<db-name>/<table-name>/
+  #   dlms-api: catalog/config/prod/dlms-api/us-west-2/<db-name>/<table-name>/
+  registry_path: "standard"
+
+# Confluence pages for table requirements and design specifications.
+# Alation table metadata and catalog-set shared description returned no URLs
+# for this table; this page was discovered via BI-space search.
+confluence_pages:
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/4347200896/Current+Design+Challenges"
+    description: "Current Design Challenges — free_entitlement design notes: Classic eComm (CES) / FeedDB sources, virtual-order filtering by hard-coded pf_ids and item_tracking_codes, free-trial type taxonomy (freemium, freemat, bmat, cmat), free→paid→free lifecycle gaps, and the Care-analytics MS SQL Server predecessor dataset. Explains why business logic continually evolves."
+
+# Successor/related tables whose column descriptions provide relevant context.
+# Lake lineage has only one upstream (godaddy_txlog.gdshop_receipt_virtualOrder,
+# a raw tx-log source — not registered in Alation). Using the two closely-related
+# enterprise entitlement tables as references since they share the entitlement
+# concept and column semantics.
+reference_tables:
+  - name: "dim_entitlement"
+    schema: "enterprise"
+    alation_table_id: 6229554
+    description: "Related table — enterprise.dim_entitlement holds entitlement dimensions for customer products; shared column semantics (entitlement_id, pf_id, product_type_desc, product_family_name, etc.)."
+  - name: "fact_entitlement_bill"
+    schema: "enterprise"
+    alation_table_id: 6607221
+    description: "Related table — enterprise.fact_entitlement_bill tracks billed entitlements; free_entitlement captures the free-conversion side of the same entitlement lifecycle."
+
+# Alation configuration (optional — enriches descriptions with catalog metadata).
+# Credentials (user_id, refresh_token, URL) are loaded from .env.
+alation:
+  enabled: true
+  # Table search query (defaults to db_name.table_name if not set)
+  search_query: null

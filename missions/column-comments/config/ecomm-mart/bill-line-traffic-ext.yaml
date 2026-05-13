@@ -1,0 +1,47 @@
+# Configuration for Column Comments Enrichment Mission
+# Edit this file before each run to specify the target table and reference materials.
+# Description: Analytic convenience denormalization of Bill Line and CSP Session Traffic.
+
+# Target table location in the data lake registry
+target:
+  # Database name (e.g., "analytic", "customer360", "ecomm-cln")
+  db_name: "ecomm-mart"
+  # Table name (e.g., "ads-bill-line", "cdl-current")
+  table_name: "bill-line-traffic-ext"
+  # Registry path variant: "standard" or "dlms-api"
+  #   standard: catalog/config/prod/us-west-2/<db-name>/<table-name>/
+  #   dlms-api: catalog/config/prod/dlms-api/us-west-2/<db-name>/<table-name>/
+  registry_path: "standard"
+
+# Confluence pages for table requirements and design specifications.
+# Sourced from the Alation table description; verify each URL before running.
+confluence_pages:
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/3392734327/Bill+Line+Traffic_Extended"
+    description: "Bill Line (Traffic_Extended) — design doc: denormalization of Analytic Bill Line + Analytic Traffic Detail (WADv2). Supersedes analytic.ads_bill_line_ext (WADv1). History from 2022-08-01, 9am MST SLA, dedup logic for duplicate WADv2 sessions. Sourced from the Catalog Set 94 shared Description (tiny link https://godaddy-corp.atlassian.net/wiki/x/dwQ5yg resolves here)."
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/10368952/ADS_Bill_Line"
+    description: "ADS_Bill_Line — upstream Analytic Bill Line design reference (one of the two joined inputs to bill_line_traffic_ext)."
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/ANALYENG/pages/3899489/Enterprise+Data+Lake+Layers"
+    description: "Enterprise Data Lake Layers — overview of Analytic Dataset (ADS) layer, the classification for this table."
+
+# Successor/related tables whose column descriptions provide relevant context.
+# The agent looks these up in Alation to extract existing column descriptions.
+reference_tables:
+  - name: "ads_bill_line"
+    schema: "analytic"
+    alation_table_id: 6242622
+    description: "Upstream dependency from data lake registry lineage — analytic.ads_bill_line: analytic data set for bill line"
+  - name: "gd_bill_id_session_xref"
+    schema: "gd_traffic_mart"
+    alation_table_id: 6636558
+    description: "Upstream dependency from data lake registry lineage — gd_traffic_mart.gd_bill_id_session_xref: Mapping table between Orders (bill_id) and Traffic (session_id)"
+  - name: "analytic_traffic_detail"
+    schema: "gd_traffic_mart"
+    alation_table_id: 6951066
+    description: "Upstream dependency from data lake registry lineage — gd_traffic_mart.analytic_traffic_detail: Analytic Dataset for CSP Traffic Session and Order Data"
+
+# Alation configuration (optional — enriches descriptions with catalog metadata).
+# Credentials (user_id, refresh_token, URL) are loaded from .env.
+alation:
+  enabled: true
+  # Table search query (defaults to db_name.table_name if not set)
+  search_query: null
