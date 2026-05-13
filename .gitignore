@@ -10,3 +10,6 @@ api-keys.txt
 
 # macOS
 .DS_Store
+
+# Per-user Claude Code state (project skills under .claude/skills/ are tracked)
+.claude/settings.local.json

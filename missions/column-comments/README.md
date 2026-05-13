@@ -8,16 +8,18 @@ A three-stage Moon Units mission. The container's workspace is bind-mounted
 to the host via `mu launch --mount-workspace`, so stage outputs appear on
 the host filesystem as they're written — no post-run `docker cp` needed.
 
-1. **Research** — Clones `gdcorp-dna/lake`, reads the table DDL/YAML, fetches
-   Confluence design pages, queries Alation for existing column metadata and
-   reference-table descriptions, and pulls official term definitions from the
-   Certified Data Dictionary (Folder 6). Writes `research.md`.
-2. **Enrich** — Rewrites the cloned `table.ddl` in place with COMMENT clauses
-   on every column, applying annotation rules (`@PrimaryKey`, `@ForeignKey`,
-   `@Enumerated`), the 255-char limit, and official terminology.
-3. **Validate** — Re-reads the enriched DDL, confirms every comment is
-   ≤255 characters, and condenses any that overflow (intelligent rewrite,
-   never mid-word truncation).
+1. **Research** (`research.md`) — Clones `gdcorp-dna/lake`, reads the table
+   DDL/YAML, fetches Confluence design pages, queries Alation for existing
+   column metadata and reference-table descriptions, and pulls official term
+   definitions from the Certified Data Dictionary (Folder 6).
+2. **Enrich** (`enrich.md`) — Rewrites the cloned `table.ddl` in place with
+   COMMENT clauses on every column, applying annotation rules (`@PrimaryKey`,
+   `@ForeignKey`, `@Enumerated`), the 255-char limit, and official
+   terminology; appends an enrichment summary with dictionary terms applied,
+   notable decisions, and a longest-comments QA table.
+3. **Validate** (`validate.md`) — Re-reads the enriched DDL, confirms every
+   comment is ≤255 characters, condenses any that overflow (intelligent
+   rewrite, never mid-word truncation); appends a short pass/fail report.
 
 `run.sh` snapshots the in-repo `table.ddl` at three moments — post-bootstrap
 (original), after "Finished stage: enrich" (enriched), and at SUCCEEDED
@@ -80,12 +82,16 @@ Results are saved to `output/<db_name>/<table_name>/`:
 
 | File | Contents |
 |------|----------|
-| `original-table.ddl` | Pre-enrich DDL from the lake repo (snapshotted at bootstrap) |
-| `enriched-table.ddl` | DDL after the enrich stage |
-| `validated-table.ddl` | Final DDL after the validate stage — authoritative output |
-| `ddl-comparison.md` | Side-by-side table: Column \| Original \| Enriched \| Validated \| Len |
-| `research.md` | Research findings (Confluence summaries, Alation metadata, dictionary mappings) |
-| `INPUT.md` | The generated input that was sent to the agent |
+| `INPUT.md` | Parameters the mission ran with (framework-written from `input.content`) |
+| `research.md` | Stage 1 output — Confluence summaries, Alation metadata, Certified Data Dictionary mappings |
+| `enrich.md` | Stage 2 output — enrichment summary: counts, dictionary terms applied, notable decisions, longest-comment QA table |
+| `validate.md` | Stage 3 output — validation summary: 255-char check, columns condensed (if any) |
+| `original-table.ddl` | Pre-enrich DDL snapshot from the lake repo |
+| `enriched-table.ddl` | Post-enrich DDL snapshot (same file the agent edited in-place, captured at stage boundary) |
+| `validated-table.ddl` | Post-validate DDL snapshot — authoritative output |
+| `ddl-comparison.md` | Side-by-side per-column table: Column \| Original \| Enriched \| Validated \| Len |
+
+Stage `.md` files follow the Moon Units convention: the framework pre-writes a header, the agent appends its summary, the framework appends a footer with the agent's final reply.
 
 ## File Structure
 

@@ -35,28 +35,32 @@ flowchart TD
         R_Dictionary --> R_Output
     end
 
-    %% Stage 2: Enrich — rewrites the in-repo table.ddl in place
+    %% Stage 2: Enrich — rewrites the in-repo table.ddl in place, appends to enrich.md
     subgraph Enrich["Stage 2: Enrich"]
         direction TB
         E_Input["Read research.md"]
         E_Standard["Apply Column Description Standard<br>(annotations, 255-char target,<br>official terminology)"]
-        E_WriteRepo["Overwrite repos/lake/.../table.ddl<br>in the cloned repo (in-place)"]
+        E_WriteRepo["Rewrite repos/lake/.../table.ddl<br>in the cloned repo (in-place)"]
+        E_Output["Append enrichment summary<br>to enrich.md"]
 
         E_Input --> E_Standard
         E_Standard --> E_WriteRepo
+        E_WriteRepo --> E_Output
     end
 
-    %% Stage 3: Validate — enforces hard 255-char limit
+    %% Stage 3: Validate — enforces hard 255-char limit, appends to validate.md
     subgraph Validate["Stage 3: Validate"]
         direction TB
         V_Read["Read enriched table.ddl"]
         V_Check["Check every COMMENT ≤ 255 chars"]
         V_Condense["If any overflow: condense<br>(never mid-word truncation)"]
         V_FinalRepo["Final repos/lake/.../table.ddl<br>(compliant DDL)"]
+        V_Output["Append validation summary<br>to validate.md"]
 
         V_Read --> V_Check
         V_Check --> V_Condense
         V_Condense --> V_FinalRepo
+        V_FinalRepo --> V_Output
     end
 
     %% Stage flow
@@ -80,7 +84,7 @@ flowchart TD
     ValidatedSnap --> CompareGen["run.sh generates<br>ddl-comparison.md<br>(original | enriched | validated)"]
     OriginalSnap --> CompareGen
     EnrichedSnap --> CompareGen
-    CompareGen --> Output["output/&lt;db&gt;/&lt;table&gt;/<br>original/enriched/validated-table.ddl<br>research.md, INPUT.md, ddl-comparison.md"]
+    CompareGen --> Output["output/&lt;db&gt;/&lt;table&gt;/<br>INPUT.md<br>research.md, enrich.md, validate.md<br>original/enriched/validated-table.ddl<br>ddl-comparison.md"]
     Output -->|"macOS notification<br>+ success banner"| User
 
     %% Styling

@@ -15,15 +15,29 @@
 #   1. Reads config/<db>/<table>.yaml and generates .manifest.generated.yaml
 #   2. Launches mu with --mount-workspace pointing at a hidden host directory.
 #      The container's /tmp/moonunit-workspace is bind-mounted to the host, so
-#      every file the agent writes (research.md, *-table.ddl, cloned repos)
-#      appears on the host filesystem as it happens — no docker cp needed.
-#   3. Tails the log, snapshots the original DDL from the cloned repo once it
-#      appears, polls for state=SUCCEEDED or FAILED.
-#   4. On success: copies artifacts out of the workspace, generates
-#      ddl-comparison.md, kills mu (skips the 10-min post-manifest wait),
-#      sends a macOS notification, and cleans up the workspace.
-#      On failure: reports the error and leaves the workspace for debugging.
+#      every file the agent writes (research.md / enrich.md / validate.md stage
+#      outputs, INPUT.md, cloned repos) appears on the host filesystem as it
+#      happens — no docker cp needed.
+#   3. Tails the log, snapshots the cloned repo's table.ddl at stage boundaries
+#      (original / enriched / validated), polls for state=SUCCEEDED or FAILED.
+#   4. On success: copies the three stage .md files and INPUT.md into
+#      output/<db>/<table>/, generates ddl-comparison.md, kills mu (skips the
+#      10-min post-manifest wait), sends a macOS notification, and cleans up
+#      the workspace.
+#      On failure: copies whatever stage outputs exist so operators can inspect
+#      partial progress, reports the error, leaves the workspace for debugging.
 #      On Ctrl+C: kills mu, cleans up, exits.
+#
+# Output layout per run (observability):
+#   output/<db>/<table>/
+#     INPUT.md                   - parameters the mission ran with
+#     research.md                - stage 1 output (research notes)
+#     enrich.md                  - stage 2 output (enrichment summary)
+#     validate.md                - stage 3 output (validation summary)
+#     original-table.ddl         - repo snapshot before enrich
+#     enriched-table.ddl         - repo snapshot after enrich
+#     validated-table.ddl        - repo snapshot after validate (final)
+#     ddl-comparison.md          - per-column before/after table
 
 set -euo pipefail
 
@@ -259,7 +273,8 @@ rm -rf "$WORKSPACE_DIR"
 # Wipe prior-run artifacts so the mid-pipeline snapshot guards (`[[ ! -f ]]`)
 # actually trigger on fresh files instead of keeping stale ones.
 rm -f "$OUTPUT_DIR"/{original,enriched,validated}-table.ddl \
-      "$OUTPUT_DIR"/{research.md,INPUT.md,ddl-comparison.md}
+      "$OUTPUT_DIR"/{research,enrich,validate}.md \
+      "$OUTPUT_DIR"/{INPUT.md,ddl-comparison.md}
 mkdir -p "$WORKSPACE_DIR"
 
 cleanup() {
@@ -400,9 +415,17 @@ generate_comparison_report() {
   } > "$report"
 }
 
-if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
-  collect_artifact "$WORKSPACE_DIR/research.md" "$OUTPUT_DIR/research.md" || true
+copy_stage_outputs() {
+  # Copy per-stage markdown + INPUT.md from workspace to $OUTPUT_DIR.
+  # Safe to call on SUCCESS or FAILURE; missing files are skipped silently.
   collect_artifact "$WORKSPACE_DIR/INPUT.md"    "$OUTPUT_DIR/INPUT.md"    || true
+  collect_artifact "$WORKSPACE_DIR/research.md" "$OUTPUT_DIR/research.md" || true
+  collect_artifact "$WORKSPACE_DIR/enrich.md"   "$OUTPUT_DIR/enrich.md"   || true
+  collect_artifact "$WORKSPACE_DIR/validate.md" "$OUTPUT_DIR/validate.md" || true
+}
+
+if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
+  copy_stage_outputs
 
   # Snapshot the final validated DDL from the cloned repo.
   if [[ -f "$REPO_DDL" ]]; then
@@ -452,6 +475,9 @@ if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
 fi
 
 if [[ "$TERMINAL" == "FAILED" ]]; then
+  # Copy whatever stage outputs exist so operators can inspect partial progress
+  # without digging into the workspace. Workspace is also kept for deeper debug.
+  copy_stage_outputs
   ERROR=$(grep "fatal error\|state=FAILED" "$MU_LOG" | tail -1 | sed "s/.*fatal error: //" | cut -c1-120)
   kill "$MU_PID" 2>/dev/null || true
   osascript -e "display notification \"$ERROR\" with title \"Moon Unit Failed ✗\"" 2>/dev/null
@@ -463,6 +489,7 @@ if [[ "$TERMINAL" == "FAILED" ]]; then
   echo " Error: $ERROR"
   echo " Workspace: $WORKSPACE_DIR (left for debugging)"
   echo " Log: $MU_LOG"
+  echo " Partial outputs: $OUTPUT_DIR/ (research.md / enrich.md / validate.md if reached)"
   echo "═══════════════════════════════════════════════════"
   exit 1
 fi
