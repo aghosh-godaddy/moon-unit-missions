@@ -286,6 +286,16 @@ cleanup() {
     kill "$TAIL_PID" 2>/dev/null || true
     wait "$TAIL_PID" 2>/dev/null || true
   fi
+  # On interrupt, also stop the docker container so the workspace stops being
+  # written to. Use the latest mu-<timestamp> name parsed from the log.
+  if [[ -f "${MU_LOG:-/dev/null}" ]]; then
+    local cn
+    cn=$(grep -oE 'mu-[0-9]+' "$MU_LOG" 2>/dev/null | head -1 || true)
+    if [[ -n "$cn" ]]; then
+      docker stop --time 5 "$cn" >/dev/null 2>&1 || true
+      docker rm   --force  "$cn" >/dev/null 2>&1 || true
+    fi
+  fi
   if [[ "$sig" == "INT" || "$sig" == "TERM" ]]; then
     echo ""
     echo "[!] Interrupted — workspace left at $WORKSPACE_DIR for inspection."
@@ -378,13 +388,14 @@ generate_comparison_report() {
   local validated="$OUTPUT_DIR/validated-table.ddl"
   [[ -f "$validated" ]] || return 0
 
+  # DDL writers use either uppercase "COMMENT" or lowercase "comment"; match both.
   extract_comment_for() {
     local file="$1" col="$2"
     [[ -f "$file" ]] || { echo "—"; return; }
     local line
     line=$(grep -E "^[, ]*${col}[[:space:]]" "$file" 2>/dev/null | head -1)
-    if echo "$line" | grep -q "COMMENT"; then
-      echo "$line" | sed "s/.*COMMENT .//;s/.[,)]*$//"
+    if echo "$line" | grep -qi "COMMENT"; then
+      echo "$line" | sed -E "s/.*[Cc][Oo][Mm][Mm][Ee][Nn][Tt] .//;s/.[,)]*$//"
     else
       echo "—"
     fi
@@ -399,13 +410,13 @@ generate_comparison_report() {
     echo "|---|--------|----------|----------|-----------|-----|"
     local col_num=0
     while IFS= read -r validated_line; do
-      echo "$validated_line" | grep -q "COMMENT" || continue
+      echo "$validated_line" | grep -qi "COMMENT" || continue
       col_num=$((col_num + 1))
       local col_name orig_c enr_c val_c val_len
       col_name=$(echo "$validated_line" | awk '{print $1}' | sed 's/^,//')
       orig_c=$(extract_comment_for "$orig" "$col_name")
       enr_c=$(extract_comment_for "$enriched" "$col_name")
-      val_c=$(echo "$validated_line" | sed "s/.*COMMENT .//;s/.[,)]*$//")
+      val_c=$(echo "$validated_line" | sed -E "s/.*[Cc][Oo][Mm][Mm][Ee][Nn][Tt] .//;s/.[,)]*$//")
       val_len=${#val_c}
       orig_c=$(echo "$orig_c" | sed 's/|/\\|/g')
       enr_c=$(echo "$enr_c" | sed 's/|/\\|/g')
@@ -441,8 +452,8 @@ if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
   FINAL_DDL="$OUTPUT_DIR/validated-table.ddl"
   [[ -f "$FINAL_DDL" ]] || FINAL_DDL="$OUTPUT_DIR/enriched-table.ddl"
   if [[ -f "$FINAL_DDL" ]]; then
-    OVER_LIMIT=$(grep "COMMENT" "$FINAL_DDL" | while IFS= read -r l; do
-      c=$(echo "$l" | sed "s/.*COMMENT .//;s/.[,)]*$//")
+    OVER_LIMIT=$(grep -i "COMMENT" "$FINAL_DDL" | while IFS= read -r l; do
+      c=$(echo "$l" | sed -E "s/.*[Cc][Oo][Mm][Mm][Ee][Nn][Tt] .//;s/.[,)]*$//")
       [[ ${#c} -gt 255 ]] && echo "1" || true
     done | wc -l | tr -d " ")
     if [[ "$OVER_LIMIT" -gt 0 ]]; then
@@ -452,11 +463,27 @@ if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
 
   generate_comparison_report
 
-  # Stop the container; we already have everything we need.
+  # Stop the container BEFORE wiping the workspace. With --keep-container, the
+  # docker container outlives `mu launch`, and the bind-mounted workspace stays
+  # held by it for several seconds after state=SUCCEEDED. Without this teardown,
+  # the container's late writes recreate `.workspace/.../repos/...` skeletons
+  # right after `rm -rf`. Sequence: SIGTERM mu → docker stop the container by
+  # name (mu-<timestamp> from the log) → wait for it to exit → then rm.
   kill "$MU_PID" 2>/dev/null || true
+  CONTAINER_NAME=$(grep -oE 'mu-[0-9]+' "$MU_LOG" 2>/dev/null | head -1 || true)
+  if [[ -n "$CONTAINER_NAME" ]]; then
+    docker stop --time 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker rm   --force  "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  fi
+  wait "$MU_PID" 2>/dev/null || true
 
-  # Workspace is no longer needed. Keep .workspace out of the way.
-  rm -rf "$WORKSPACE_DIR"
+  # Workspace is no longer needed. Belt-and-suspenders: retry once after a short
+  # pause in case the container's filesystem driver lags the docker stop.
+  rm -rf "$WORKSPACE_DIR" 2>/dev/null || true
+  if [[ -d "$WORKSPACE_DIR" ]]; then
+    sleep 2
+    rm -rf "$WORKSPACE_DIR" 2>/dev/null || true
+  fi
 
   osascript -e "display notification \"Output ready in output/\" with title \"Moon Unit Complete ✓\"" 2>/dev/null
   printf "\a"
@@ -467,7 +494,7 @@ if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
   echo " Target: ${DB_NAME}.${TABLE_NAME}"
   echo " Output: $OUTPUT_DIR/"
   if [[ -f "$FINAL_DDL" ]]; then
-    COL_COUNT=$(grep -c "COMMENT" "$FINAL_DDL" 2>/dev/null || echo "?")
+    COL_COUNT=$(grep -ci "COMMENT" "$FINAL_DDL" 2>/dev/null || echo "?")
     echo " Columns enriched: $COL_COUNT"
   fi
   echo "═══════════════════════════════════════════════════"
