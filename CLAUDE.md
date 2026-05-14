@@ -26,8 +26,12 @@ Currently:
 - **Outputs are committed** under `output/<…>/` as an audit trail. Per-run
   scratch space (`.workspace/`) is gitignored.
 - **Helper scripts go under `<mission>/scripts/`** with their own README
-  explaining purpose and env vars. Skills under `.claude/skills/` chain
-  scripts into a workflow (e.g. `column-comments-config`).
+  explaining purpose and env vars.
+- **Skills live at `.claude/skills/<name>/`** at the repo root, not under
+  individual missions (Claude Code does not search nested `.claude/`
+  directories). Mission-scoped skills are prefixed with the mission name
+  (e.g. `column-comments-config`); cross-mission skills use no prefix.
+  See `.claude/skills/README.md`.
 - **Secrets**: `.env.local` per mission (gitignored), credentials sourced
   by `run.sh`. Never commit secrets.
 
