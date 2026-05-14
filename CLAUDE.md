@@ -1,60 +1,55 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Repo-level guidance for Claude Code. Mission-specific notes live in each
+mission's own CLAUDE.md (e.g., `missions/column-comments/CLAUDE.md`),
+which are loaded automatically when working inside that mission directory.
 
-## What This Repo Is
+## What this repo is
 
-A collection of Moon Units missions — automated AI agent workflows that run inside Docker containers via GoDaddy's internal `mu` CLI. Each mission is a multi-stage pipeline (manifest) that clones repos, calls external APIs, and produces artifacts.
+A collection of Moon Units missions — automated AI agent workflows that
+run inside Docker containers via GoDaddy's internal `mu` CLI. Each mission
+is a self-contained directory under `missions/` with its own manifest,
+launcher, configs, and outputs.
 
-Currently contains one mission: **column-comments** — enriches Data Lake table DDL files with standardized column descriptions by researching Confluence, Alation, and the Certified Data Dictionary.
+Currently:
+- `missions/column-comments/` — enriches Data Lake table DDLs with
+  standardized column descriptions.
 
-## Running a Mission
+## Conventions across missions
+
+- **One mission per directory under `missions/`.** Each mission owns its
+  `manifest.yaml`, `run.sh`, `config/`, `output/`, `scripts/`, `docs/`,
+  and `CLAUDE.md`. No shared state across missions.
+- **Static manifest, dynamic input.** `manifest.yaml` is a generic
+  template; per-run variables live in `config/` and are assembled into
+  `.manifest.generated.yaml` by `run.sh` at launch time.
+- **Outputs are committed** under `output/<…>/` as an audit trail. Per-run
+  scratch space (`.workspace/`) is gitignored.
+- **Helper scripts go under `<mission>/scripts/`** with their own README
+  explaining purpose and env vars. Skills under `.claude/skills/` chain
+  scripts into a workflow (e.g. `column-comments-config`).
+- **Secrets**: `.env.local` per mission (gitignored), credentials sourced
+  by `run.sh`. Never commit secrets.
+
+## Running any mission
 
 ```bash
-cd missions/column-comments
-./run.sh <db_name> <table_name>    # e.g. ./run.sh customer360 customer-lifecycle-vw
-./run.sh                           # shows available configs
+cd missions/<mission-name>
+./run.sh <args>
 ```
 
-Prerequisites: `mu` CLI installed, Docker running (`colima start`), `AWS_PROFILE` set, `~/.config/mu/mu.env` configured with MOONUNIT_* credentials, `.env.local` present in the mission directory.
+Cross-mission prerequisites: `mu` CLI installed, Docker running
+(`colima start`), `AWS_PROFILE` set, `~/.config/mu/mu.env` configured
+with `MOONUNIT_*` credentials. Mission-specific prerequisites are in the
+mission's CLAUDE.md and README.
 
-## Architecture
+## Moon Units conventions worth remembering
 
-```
-missions/column-comments/
-├── config/<db_name>/<table_name>.yaml   # Per-table config (only file to edit for new tables)
-├── manifest.yaml                        # Static template — generic stage prompts
-├── run.sh                               # Reads config, generates .manifest.generated.yaml, launches mu
-├── .env.local                           # Local env vars (secrets, not committed)
-├── output/<db_name>/<table_name>/       # Mission output (enriched DDL, research)
-└── docs/                                # Data flow diagrams, architecture docs
-```
-
-**Key design principle:** `manifest.yaml` is never edited for new tables. All per-table variables live in `config/<db_name>/<table_name>.yaml`. `run.sh` assembles the two into `.manifest.generated.yaml` at launch time.
-
-**Mission stages:**
-1. **research** (Sonnet) — reads DDL from cloned `gdcorp-dna/lake` repo, fetches Confluence pages, queries Alation for column metadata and Certified Data Dictionary terms, produces `research.md`
-2. **enrich** (Sonnet) — applies the Column Description Standard to produce `enriched-table.ddl` with COMMENT clauses on every column
-
-**Watcher daemon:** `run.sh` spawns a background process that monitors for mission completion, pulls output from the Docker container via `docker cp`, kills mu, and sends a macOS notification. Exit code 143 (SIGTERM) from `run.sh` is expected on success.
-
-## Adding a New Table
-
-1. Create `config/<db_name>/<table_name>.yaml` (copy an existing one as template)
-2. Set `target.db_name`, `target.table_name`, `target.registry_path`
-3. Add Confluence page URLs under `confluence_pages`
-4. Optionally add `reference_tables` with Alation table IDs
-5. Run `./run.sh <db_name> <table_name>`
-
-## Config YAML Structure
-
-The `registry_path` field determines the DDL location in the lake repo:
-- `"standard"` → `catalog/config/prod/us-west-2/<db>/<table>/table.ddl`
-- `"dlms-api"` → `catalog/config/prod/dlms-api/us-west-2/<db>/<table>/table.ddl`
-
-## Gotchas
-
-- The `mu` agent sometimes writes the enriched DDL to the cloned repo path instead of the workspace root. The watcher tries multiple paths and validates with a `CREATE TABLE` check.
-- `apiKeySource: "none"` in mu logs + `ConnectionRefused` error means the Anthropic API credentials in `mu.env` are stale or missing — re-authenticate.
-- Confluence page IDs are extracted from URLs (the numeric segment after `/pages/`).
-- Alation credentials use a refresh token flow — the agent calls `createAPIAccessToken` at runtime.
+- `manifest.yaml`'s `plan.stages[].output` is a **markdown file** (the
+  framework pre-writes a header, the agent appends a summary, the
+  framework appends a footer). It is *not* a generic file path.
+- Default stage output filename is `<stage-name>.md` if `output:` is omitted.
+- `mu launch --mount-workspace <path>` bind-mounts the container's cwd to
+  the host so artifacts and cloned repos appear in real time.
+- `INPUT.md` is auto-written by the framework from the manifest's
+  top-level `input.content`. Don't have the launcher overwrite it.
