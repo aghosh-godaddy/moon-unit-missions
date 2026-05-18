@@ -114,11 +114,11 @@ CREATE TABLE fact_bill_line(
                              │
                              ▼  ./run.sh <db> <table>
    ┌────────────┐    ┌────────────┐    ┌────────────┐
-   │ 1.research │ ─> │  2.enrich  │ ─> │ 3.validate │   3 mu stages
-   └────────────┘    └────────────┘    └────────────┘   (Sonnet)
+   │ 1.research │ ─> │  2.enrich  │ ─> │ 3.validate │    3 mu stages
+   └────────────┘    └────────────┘    └────────────┘      
         │                  │                  │
         ▼                  ▼                  ▼
-   research.md        enrich.md         validate.md     stage outputs
+    research.md        enrich.md         validate.md     stage outputs
                            │                  │
                            ▼                  ▼
                    table.ddl edited in-place in cloned lake repo
@@ -185,12 +185,6 @@ Produces `research.md` with:
 |---|---|---|
 | GCR          | Gross Cash Receipts         | gcr_usd_amt, margin_gcr_usd_amt  |
 | MSRP         | Manufacturer's Suggested Retail Price   | original_list_price_usd_amt      |
-
-## Notable decisions
-- Preserved the `'Employee PII'` annotation on shopper-id columns and appended
-  descriptive text after it.
-- Expanded GCR using the Certified Data Dictionary; rejected paraphrases like
-  "Gross Customer Receipt" the agent had drafted.
 
 > The `.md` is an **operator-facing audit trail**, not just a log.
 
