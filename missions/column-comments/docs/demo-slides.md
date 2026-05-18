@@ -2,8 +2,6 @@
 marp: true
 theme: default
 paginate: true
-header: 'Column Comments Mission'
-footer: 'Data & Analytics — 2026'
 style: |
   section { font-size: 26px; }
   section.lead h1 { font-size: 56px; }
@@ -28,12 +26,6 @@ style: |
 **Audience:** Data Engineers
 **Length:** 20 min + Q&A
 
-<!--
-Open warm. Goal: by the end, attendees know what this is, when to use it, how
-to add a table, and what they can trust. ~17 content slides, 1 min each, 3 min
-buffer for Q&A.
--->
-
 ---
 
 # The problem
@@ -48,10 +40,6 @@ Every Data Lake table needs column-level descriptions. Today:
 
 > Result: column comments are either missing, wrong, or untrustworthy.
 
-<!--
-Pause here. Ask the room: "Show of hands — who has had to write COMMENT clauses
-for a 100-column fact table?" This sets up the demo.
--->
 
 ---
 
@@ -69,9 +57,6 @@ Output: a **production-ready** `table.ddl` you can PR straight into `gdcorp-dna/
 
 **Status today:** 18 tables enriched across 9 schemas (`enterprise`, `customer360`, `ecomm360`, `analytic`, `gd_traffic_mart`, …)
 
-<!--
-Anchor the abstract pipeline in concrete numbers before showing code.
--->
 
 ---
 
@@ -88,10 +73,6 @@ CREATE TABLE fact_bill_line(
  -- 69 more columns, no comments
 );
 ```
-
-<!--
-Set up the contrast. Don't read every line — let it land visually.
--->
 
 ---
 
@@ -121,14 +102,6 @@ CREATE TABLE fact_bill_line(
 
 <small>Note: `GCR` expanded from the **Certified Data Dictionary** — never paraphrased.</small>
 
-<!--
-This is the "money slide". Talk through it for ~90 seconds.
-- Annotations: @PrimaryKey on 3 columns marks the composite key
-- Cross-system mapping baked in (legacy → new e-comm)
-- Enumerated values on source_system_name
-- Official terminology (GCR = Gross Cash Receipts) — non-negotiable
--->
-
 ---
 
 # The pipeline at a glance
@@ -141,7 +114,7 @@ This is the "money slide". Talk through it for ~90 seconds.
                              │
                              ▼  ./run.sh <db> <table>
    ┌────────────┐    ┌────────────┐    ┌────────────┐
-   │  research  │ ─> │   enrich   │ ─> │  validate  │   3 mu stages
+   │ 1.research │ ─> │  2.enrich  │ ─> │ 3.validate │   3 mu stages
    └────────────┘    └────────────┘    └────────────┘   (Sonnet)
         │                  │                  │
         ▼                  ▼                  ▼
@@ -158,11 +131,6 @@ Three sources of truth feed `research`:
 - **Confluence** — table design pages (`godaddy-corp.atlassian.net`)
 - **Alation** — table/column metadata, source comments, reference tables, lineage
 - **Certified Data Dictionary** — official term expansions (Alation Doc Folder 6)
-
-<!--
-Two-minute slide. Walk through left-to-right. Emphasize: configs are the only
-thing humans edit per-table; the manifest is generic.
--->
 
 ---
 
@@ -201,7 +169,6 @@ Produces `research.md` with:
 | 11 | Audit columns include TZ | `etl_build_mst_ts` documents Mountain Standard Time |
 | 12 | Preserve `'Employee PII'` | Never overwritten — appended to |
 
-<small>Full standard: <https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/.../Column+Description+Standard></small>
 
 ---
 
@@ -217,8 +184,7 @@ Produces `research.md` with:
 | Abbreviation | Official expansion          | Where used                       |
 |---|---|---|
 | GCR          | Gross Cash Receipts         | gcr_usd_amt, margin_gcr_usd_amt  |
-| MSRP         | Manufacturer's Suggested    | original_list_price_usd_amt      |
-|              |   Retail Price              |                                  |
+| MSRP         | Manufacturer's Suggested Retail Price   | original_list_price_usd_amt      |
 
 ## Notable decisions
 - Preserved the `'Employee PII'` annotation on shopper-id columns and appended
@@ -248,11 +214,6 @@ If a comment exceeds 255 chars, it's condensed using rules **in order**:
 **Never** mid-word truncation. **Never** `...`-ellipsis cutoff.
 
 > Output: `validate.md` reports condensed columns with before/after lengths.
-
-<!--
-Why this matters: Hive's COMMENT field is 256 bytes. Anything past 255 chars
-gets silently truncated by the database engine. We've seen it in prod.
--->
 
 ---
 
@@ -348,8 +309,6 @@ output/<db>/<table>/
 
 All committed to the missions repo as a permanent record.
 
-> **Reviewing a PR?** Open `ddl-comparison.md` next to `validated-table.ddl`. Done.
-
 ---
 
 # Try it
@@ -371,8 +330,6 @@ cp .env.local.example .env.local        # fill in tokens
 **Built with:** Moon Units, Claude Sonnet 4.6, Alation API, Confluence API
 
 ---
-
-<!-- _class: lead -->
 
 # Questions?
 
