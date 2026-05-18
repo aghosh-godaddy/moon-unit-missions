@@ -27,7 +27,6 @@ style: |
 
 **Audience:** Data Engineers
 **Length:** 20 min + Q&A
-**Repo:** `gdcorp-dna/moon-unit-missions`
 
 <!--
 Open warm. Goal: by the end, attendees know what this is, when to use it, how
@@ -147,11 +146,11 @@ This is the "money slide". Talk through it for ~90 seconds.
         │                  │                  │
         ▼                  ▼                  ▼
    research.md        enrich.md         validate.md     stage outputs
-                          │                  │
-                          ▼                  ▼
+                           │                  │
+                           ▼                  ▼
                    table.ddl edited in-place in cloned lake repo
-                          │                  │
-                          ▼                  ▼
+                           │                  │
+                           ▼                  ▼
               enriched-table.ddl   validated-table.ddl   launcher snapshots
 ```
 
@@ -475,8 +474,3 @@ cp .env.local.example .env.local        # fill in tokens
 # Questions?
 
 <br>
-
-**Slack:** `#dna-column-comments` *(or wherever)*
-**PRs welcome:** new tables, helper scripts, prompts
-
-<small>Slides built with Marp · `missions/column-comments/docs/demo-slides.md`</small>
