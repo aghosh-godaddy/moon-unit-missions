@@ -1,0 +1,48 @@
+# Configuration for Column Comments Enrichment Mission
+# Edit this file before each run to specify the target table and reference materials.
+#
+# Alation: Dimension New Acquisition Shopper (id=6332252)
+# Description: legacy-hive-dim_new_acquisition_shopper
+# Historical view of newly acquired shoppers (one row per shopper at first paid
+# order). Stored as LATEST_SNAPSHOT under enterprise_eds_prime/.
+
+# Target table location in the data lake registry
+target:
+  # Database name (e.g., "analytic", "customer360", "ecomm-cln")
+  db_name: "enterprise"
+  # Table name (e.g., "ads-bill-line", "cdl-current")
+  table_name: "dim-new-acquisition-shopper"
+  # Registry path variant: "standard" or "dlms-api"
+  #   standard: catalog/config/prod/us-west-2/<db-name>/<table-name>/
+  #   dlms-api: catalog/config/prod/dlms-api/us-west-2/<db-name>/<table-name>/
+  registry_path: "standard"
+
+# Confluence pages for table requirements and design specifications.
+# Surfaced via title-first BI-space search (page is not linked from Alation
+# table metadata or its catalog set).
+confluence_pages:
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/10369719/Dim_New_Acquisition_Shopper"
+    description: "Dim_New_Acquisition_Shopper design doc — purpose (historical view of newly-acquired shoppers; New Customer Acquisition = state transition to Active Customer in Customer Account Lifecycle), primary key (bill_shopper_id), source repo (gdcorp-dna/de-ecomm-bill-line), Airflow DAG (ecomm_unified_bill), SLA, upstream dependency, and full column-level schema with descriptions, source columns (all from enterprise.fact_bill_line), example data, and special notes (e.g., bill_shopper_id was merged_shopper_id prior to 2021-08-09; new_acquisition_bill_id is first paid order with GCR > $0 or domain change-of-ownership, pf_id in {112, 260112, 912, 260912})."
+
+# Successor/related tables whose column descriptions provide relevant context.
+# Lake lineage has 1 upstream (ecomm360.dim_customer_registration_acquisition_vw)
+# but it isn't registered in Alation, so it can't supply column descriptions.
+# Per the design doc, every target column actually sources from
+# enterprise.fact_bill_line, and bill_shopper_id semantics tie to
+# enterprise.dim_bill_shopper_id_xref — using both as references.
+reference_tables:
+  - name: "fact_bill_line"
+    schema: "enterprise"
+    alation_table_id: 6332236
+    description: "Per the design doc, every column in dim_new_acquisition_shopper sources from enterprise.fact_bill_line (bill_shopper_id, new_acquisition_bill_id, bill_country_code, new_acquisition_bill_mst_date, new_acquisition_bill_mst_ts). EDS receipt-grain table — high-signal source for column descriptions."
+  - name: "dim_bill_shopper_id_xref"
+    schema: "enterprise"
+    alation_table_id: 6332248
+    description: "Related table — enterprise.dim_bill_shopper_id_xref maps original_shopper_id ↔ merged_shopper_id at bill grain. The design doc explicitly references this table for bill_shopper_id semantics (post-2021-08-09 the column tracks original_shopper_id; prior backfill used merged_shopper_id)."
+
+# Alation configuration (optional — enriches descriptions with catalog metadata).
+# Credentials (user_id, refresh_token, URL) are loaded from .env.
+alation:
+  enabled: true
+  # Table search query (defaults to db_name.table_name if not set)
+  search_query: null

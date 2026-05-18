@@ -1,0 +1,50 @@
+# Configuration for Column Comments Enrichment Mission
+# Edit this file before each run to specify the target table and reference materials.
+#
+# Alation: Bill Shopper Identifier Cross Reference Dimension (id=6332248)
+# Description: Hadoop legacy table dp_enterprise.dim_bill_shopper_id_xref
+# Cross-reference between original/merged shopper_id at bill grain, with exclude
+# reasons for original shopper. Partitioned by bill_mst_year / bill_mst_month.
+
+# Target table location in the data lake registry
+target:
+  # Database name (e.g., "analytic", "customer360", "ecomm-cln")
+  db_name: "enterprise"
+  # Table name (e.g., "ads-bill-line", "cdl-current")
+  table_name: "dim-bill-shopper-id-xref"
+  # Registry path variant: "standard" or "dlms-api"
+  #   standard: catalog/config/prod/us-west-2/<db-name>/<table-name>/
+  #   dlms-api: catalog/config/prod/dlms-api/us-west-2/<db-name>/<table-name>/
+  registry_path: "standard"
+
+# Confluence pages for table requirements and design specifications.
+# Design doc was not surfaced by Alation metadata, catalog set, or BI-space
+# search (filtered out by noise heuristics) — supplied manually by the user.
+confluence_pages:
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/10372130/Dim_Bill_Shopper_ID_Xref"
+    description: "Dim_Bill_Shopper_ID_Xref design doc — purpose, primary key (bill_id), source repo (gdcorp-dna/de-ecomm-gcr), Airflow DAG (ecomm_unified_bill), SLA, upstream dependencies, data flow diagram, and a full column-level schema with descriptions and source tables (gdshop_receipt_header, gdshop_receipt_virtual_order, nds_smartline_event, rp_salesMonitor_internalShopper_snap, fortknox_shopper_snap)."
+
+# Successor/related tables whose column descriptions provide relevant context.
+# The agent looks these up in Alation to extract existing column descriptions.
+# Sourced from data lake registry lineage (3/4 curated; customers.customer_id_mapping_snapshot
+# dropped as a raw _snap source).
+reference_tables:
+  - name: "dim_bill_vw"
+    schema: "ecomm360"
+    alation_table_id: 7028947
+    description: "Upstream dependency from data lake registry lineage — ecomm360.dim_bill_vw: tracks every receipt of the purchase of a godaddy customer. Source of bill_id and shopper-id attribution columns."
+  - name: "fact_bill_line_vw"
+    schema: "ecomm360"
+    alation_table_id: 7027689
+    description: "Upstream dependency from data lake registry lineage — ecomm360.fact_bill_line_vw: tracks every receipt of the purchase of a godaddy customer. Provides bill-line grain context that the xref aggregates to bill grain."
+  - name: "dim_customer_vw"
+    schema: "customer360"
+    alation_table_id: 7022291
+    description: "Upstream dependency from data lake registry lineage — customer360.dim_customer_vw: shopper and profile data in customer360. Source of shopper-merge metadata used to derive original_shopper_id / merged_shopper_id."
+
+# Alation configuration (optional — enriches descriptions with catalog metadata).
+# Credentials (user_id, refresh_token, URL) are loaded from .env.
+alation:
+  enabled: true
+  # Table search query (defaults to db_name.table_name if not set)
+  search_query: null

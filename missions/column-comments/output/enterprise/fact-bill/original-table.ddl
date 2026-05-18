@@ -1,0 +1,59 @@
+CREATE TABLE fact_bill(
+bill_id             	string
+,original_bill_id    	string
+,bill_friendly_id    	string
+,source_system_name  	string
+,bill_modified_mst_ts	timestamp
+,bill_modified_mst_date	string
+,refund_flag         	boolean
+,chargeback_flag     	boolean
+,private_label_id    	int
+,rep_version_id      	int
+,bill_country_code   	string
+,bill_sub_geo_code   	string
+,bill_postal_code    	string
+,bill_source_name    	string
+,entered_by_name     	string comment 'PII'
+,translation_language_name	string
+,order_site_language_code	string
+,virtual_order_flag  	boolean
+,free_order_flag     	boolean
+,primary_payment_type_name	string
+,primary_payment_subtype_name	string
+,secondary_payment_type_name	string
+,secondary_payment_subtype_name	string
+,intent	string comment 'Intent Enum for virtual bill with value such as FREEMIUM_PURCHASE, FREE_PURCHASE, FREE_TRIAL_MODIFY, etc'
+,related_subscription string comment 'Associate a receiptless or virtual order event to a specific subscription'
+,bill_isc_source_code	string
+,receipt_price_usd_amt	decimal(18,2)
+,receipt_price_trxn_amt   	decimal(18,2)
+,gcr_usd_amt         	decimal(18,2)
+,gcr_trxn_amt             	decimal(18,2)
+,margin_gcr_usd_amt  	decimal(18,2)
+,margin_gcr_trxn_amt      	decimal(18,2)
+,commission_usd_amt  	decimal(18,2)
+,commission_trxn_amt      	decimal(18,2)
+,aftermarket_seller_commission_usd_amt	decimal(18,2)
+,aftermarket_seller_commission_trxn_amt	decimal(18,2)
+,cost_usd_amt        	decimal(18,2)
+,cost_trxn_amt            	decimal(18,2)
+,fee_usd_amt         	decimal(18,2)
+,fee_trxn_amt             	decimal(18,2)
+,fair_market_value_usd_amt	decimal(18,2)
+,fair_market_value_trxn_amt	decimal(18,2)
+,tax_usd_amt         	decimal(18,2)
+,tax_trxn_amt             	decimal(18,2)
+,injected_fair_market_value_usd_amt	decimal(18,2)
+,injected_fair_market_value_trxn_amt	decimal(18,2)
+,injected_icann_fee_usd_amt	decimal(18,2)
+,injected_icann_fee_trxn_amt	decimal(18,2)
+,injected_tax_usd_amt	decimal(18,2)
+,injected_tax_trxn_amt    	decimal(18,2)
+,bundle_allocated_revenue_usd_amt	decimal(18,2)
+,reseller_commission_usd_amt	decimal(18,2)
+,parent_reseller_commission_usd_amt	decimal(18,2)
+,trxn_currency_code       	string
+,exclude_reason_desc 	string
+,exclude_reason_month_end_desc	string
+,etl_build_mst_ts    	string
+);

@@ -1,0 +1,56 @@
+# Configuration for Column Comments Enrichment Mission
+# Edit this file before each run to specify the target table and reference materials.
+#
+# Alation: (id=6332249, no display title)
+# Description: legacy-hive-dim_new_registered_user
+# Historical view of new registered users (NRU) — shoppers transitioning from
+# Prospect → Registered User. Sibling to enterprise.dim_new_acquisition_shopper:
+# this table captures the FREE first-order side; dim_new_acquisition_shopper
+# captures the first PAID order. PK is bill_shopper_id.
+
+# Target table location in the data lake registry
+target:
+  # Database name (e.g., "analytic", "customer360", "ecomm-cln")
+  db_name: "enterprise"
+  # Table name (e.g., "ads-bill-line", "cdl-current")
+  table_name: "dim-new-registered-user"
+  # Registry path variant: "standard" or "dlms-api"
+  #   standard: catalog/config/prod/us-west-2/<db-name>/<table-name>/
+  #   dlms-api: catalog/config/prod/dlms-api/us-west-2/<db-name>/<table-name>/
+  registry_path: "standard"
+
+# Confluence pages for table requirements and design specifications.
+# The legacy /display/BI/Dim_New_Registered_User link is published in the
+# Catalog Set 92 shared description; resolved to the live Atlassian-Cloud URL
+# via title-first BI-space search.
+confluence_pages:
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/10369242/Dim_New_Registered_User"
+    description: "Dim_New_Registered_User design doc — purpose (historical view of new registered users; NRU = Prospect → Registered User state transition), primary key (bill_shopper_id), source repo (GDLakeDataProcessors/uds_dag), Airflow DAG (EDT_Ingest_Unified_Bill), SLA, and full column-level schema with descriptions, source columns (all from enterprise.fact_bill_line), example data, and business rules (FMV = $0, exclude refunds/chargebacks/Domain Change-of-Ownership pf_ids 112/260112/912/260912, only orders preceding the first paid order)."
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/10355742/DQ+dim_new_registered_user"
+    description: "DQ dim_new_registered_user — data-quality validation queries comparing the table to its upstream dp_stage.ref_uds_order_new_registered_user, including shopper-count / order-count parity checks. Useful color on column semantics and known data-quality boundaries."
+
+# Successor/related tables whose column descriptions provide relevant context.
+# Lake lineage has 1 upstream (ecomm360.dim_customer_registration_acquisition_vw)
+# but it isn't registered in Alation. Per the design doc, every target column
+# sources from enterprise.fact_bill_line. Adding the sibling NRU/NAS table and
+# the bill_shopper_id xref since they share PK semantics.
+reference_tables:
+  - name: "fact_bill_line"
+    schema: "enterprise"
+    alation_table_id: 6332236
+    description: "Per the design doc, every column in dim_new_registered_user sources from enterprise.fact_bill_line (bill_shopper_id, new_registered_user_bill_id, new_registered_user_bill_mst_date, new_registered_user_bill_mst_ts). EDS receipt-grain table — high-signal source for column descriptions."
+  - name: "dim_new_acquisition_shopper"
+    schema: "enterprise"
+    alation_table_id: 6332252
+    description: "Sibling table — enterprise.dim_new_acquisition_shopper captures the first PAID order per shopper; dim_new_registered_user captures the first FREE order. Same PK (bill_shopper_id), parallel column structure (bill_id / bill_mst_date / bill_mst_ts), shared upstream registration view. Column descriptions transfer almost directly."
+  - name: "dim_bill_shopper_id_xref"
+    schema: "enterprise"
+    alation_table_id: 6332248
+    description: "Related table — enterprise.dim_bill_shopper_id_xref maps original_shopper_id ↔ merged_shopper_id at bill grain. The design doc notes the table contains shoppers who were subsequently merged; bill_shopper_id reflects the pre-merge state at event time, identical to the convention in dim_new_acquisition_shopper."
+
+# Alation configuration (optional — enriches descriptions with catalog metadata).
+# Credentials (user_id, refresh_token, URL) are loaded from .env.
+alation:
+  enabled: true
+  # Table search query (defaults to db_name.table_name if not set)
+  search_query: null

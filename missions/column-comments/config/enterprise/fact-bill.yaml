@@ -1,0 +1,53 @@
+# Configuration for Column Comments Enrichment Mission
+# Edit this file before each run to specify the target table and reference materials.
+#
+# Alation: Fact Bill (id=6332251)
+# Description: Enterprise Dataset (EDS) that provides a comprehensive view of a
+# receipt for the purchase of GoDaddy products rollup at bill level.
+# PK: (bill_id, source_system_name). Aggregates fact_bill_line to the bill grain.
+
+# Target table location in the data lake registry
+target:
+  # Database name (e.g., "analytic", "customer360", "ecomm-cln")
+  db_name: "enterprise"
+  # Table name (e.g., "ads-bill-line", "cdl-current")
+  table_name: "fact-bill"
+  # Registry path variant: "standard" or "dlms-api"
+  #   standard: catalog/config/prod/us-west-2/<db-name>/<table-name>/
+  #   dlms-api: catalog/config/prod/dlms-api/us-west-2/<db-name>/<table-name>/
+  registry_path: "standard"
+
+# Confluence pages for table requirements and design specifications.
+# Surfaced via title-first BI-space search (Alation table metadata returned no
+# URLs and the catalog set 88 has no shared description hits).
+confluence_pages:
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/10358411/Fact_Bill"
+    description: "Fact_Bill design doc — purpose (EDS comprehensive receipt view rolled up at bill level), primary key (bill_id, source_system_name), foreign keys (pf_id → dim_product), source repo (GDLakeDataProcessors/uds), Airflow DAG (EDT_Ingest_Unified_Bill), SLA, upstream tx_log dependencies (gdshop_CommissionJunction, gdshop_receipt_header, gdshop_receipt_header_payment, gdshop_receipt_virtualOrder), data flow steps (raw → clean → EDS), and full multi-layer column schema (clean Layer 1 + EDS bill-grain columns)."
+  - url: "https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/10357308/DQ+Fact_Bill"
+    description: "DQ Fact_Bill — data-quality validation comparing dp_enterprise.fact_bill against the aggregated order-grain dataset dp_enterprise.uds_order; record-count and amount parity checks. Useful color on column semantics (especially exclude_reason_desc and the various *_usd_amt / *_trxn_amt amount columns)."
+
+# Successor/related tables whose column descriptions provide relevant context.
+# Sourced from data lake registry lineage (2/5 curated; raw tx_log upstreams
+# godaddy_txlog.* and the *_snap source filtered out). Adding the sibling
+# fact_bill_line as the highest-signal reference — fact_bill is the bill-grain
+# rollup of fact_bill_line and shares almost every column.
+reference_tables:
+  - name: "fact_bill_line"
+    schema: "enterprise"
+    alation_table_id: 6332236
+    description: "Sibling table — enterprise.fact_bill_line is the bill-line-grain receipt EDS that fact_bill rolls up to bill grain. Almost every column in fact_bill (bill_id, source_system_name, bill_modified_mst_ts, refund_flag, chargeback_flag, the *_usd_amt / *_trxn_amt amount columns, exclude_reason_desc, etc.) has an exact-name counterpart in fact_bill_line — column descriptions transfer with minimal adjustment."
+  - name: "fact_bill_line_vw"
+    schema: "ecomm360"
+    alation_table_id: 7027689
+    description: "Upstream dependency from data lake registry lineage — ecomm360.fact_bill_line_vw: tracks every receipt of the purchase of a godaddy customer. EDS Prime successor of the legacy fact_bill_line — useful for current-naming conventions and any column semantics that have evolved post-Prime migration."
+  - name: "dim_bill_vw"
+    schema: "ecomm360"
+    alation_table_id: 7028947
+    description: "Upstream dependency from data lake registry lineage — ecomm360.dim_bill_vw: tracks every receipt of the purchase of a godaddy customer. Bill-grain dimension in EDS Prime — provides current-language descriptions for bill-level attributes (bill_country_code, bill_postal_code, bill_source_name, primary_payment_*, virtual_order_flag, free_order_flag)."
+
+# Alation configuration (optional — enriches descriptions with catalog metadata).
+# Credentials (user_id, refresh_token, URL) are loaded from .env.
+alation:
+  enabled: true
+  # Table search query (defaults to db_name.table_name if not set)
+  search_query: null
