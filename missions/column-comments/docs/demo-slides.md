@@ -41,7 +41,7 @@ buffer for Q&A.
 Every Data Lake table needs column-level descriptions. Today:
 
 - 🐢 **Slow** — writing 50–200 comments per table, by hand
-- 🎲 **Inconsistent** — `GCR` becomes "Gross Customer Receipt", "Gross Cash Receipts", or just `gcr`
+- 🎲 **Inconsistent** — `GCR` becomes "Gross Cash Receipts", or just `gcr`
 - 🪦 **Stale** — once written, comments rarely keep up with schema changes or business-term updates
 - 🕵️ **Knowledge silos** — context lives in Confluence pages, Slack threads, and the head of one engineer
 - 📏 **Hard limits get hit** — Hive's 256-byte COMMENT cap silently truncates anything past 255 chars
@@ -141,7 +141,7 @@ This is the "money slide". Talk through it for ~90 seconds.
                              │
                              ▼  ./run.sh <db> <table>
    ┌────────────┐    ┌────────────┐    ┌────────────┐
-   │  research  │ ─▶ │   enrich   │ ─▶ │  validate  │   3 mu stages
+   │  research  │ ─> │   enrich   │ ─> │  validate  │   3 mu stages
    └────────────┘    └────────────┘    └────────────┘   (Sonnet)
         │                  │                  │
         ▼                  ▼                  ▼
@@ -207,7 +207,6 @@ Produces `research.md` with:
 
 # Stage 2: Enrich — what the agent appends to `enrich.md`
 
-```markdown
 ## Enrichment summary
 - Target: enterprise.fact_bill_line
 - Columns touched: 74
@@ -226,7 +225,6 @@ Produces `research.md` with:
   descriptive text after it.
 - Expanded GCR using the Certified Data Dictionary; rejected paraphrases like
   "Gross Customer Receipt" the agent had drafted.
-```
 
 > The `.md` is an **operator-facing audit trail**, not just a log.
 
@@ -334,21 +332,6 @@ alation:
 
 ---
 
-# Why we trust the output
-
-| Trust mechanism | What it protects against |
-|---|---|
-| **Three sources of truth** | Single-source bias — Alation, Confluence, Dictionary cross-check each other |
-| **Certified Data Dictionary lookup** | Hallucinated abbreviation expansions ("GCR ≠ Gross Customer Receipt") |
-| **Reference-table column carryover** | Reinventing definitions when the predecessor table already documented them |
-| **PII annotation preservation** | Stripping compliance-critical tags during enrichment |
-| **In-repo DDL edit + 3 snapshots** | Loss of the `original-table.ddl` baseline for review |
-| **Stage-3 length validation** | Silent DB-engine truncation past 255 chars |
-| **Per-stage `.md` audit trail** | "Why did the agent write this?" — every decision is captured |
-| **`ddl-comparison.md`** | Reviewers spotting unintended changes during PR |
-
----
-
 # Audit trail per run
 
 ```
@@ -369,86 +352,6 @@ All committed to the missions repo as a permanent record.
 
 ---
 
-# What we've enriched (as of today)
-
-**18 tables across 9 schemas** — all `enriched` status in `CATALOG.md`:
-
-<div class="two-col">
-
-**Bill / receipt facts**
-- `enterprise.fact_bill_line`
-- `enterprise.fact_entitlement_bill`
-- `bi_reports.ads_entitlement_bill`
-- `analytic.ads_bill_line`
-- `ecomm360.fact_bill_line_vw`
-- `ecomm360.dim_bill_vw`
-- `ecomm_mart.bill_line_traffic_ext`
-- `ecomm_mart.renewal_360`
-
-**Subscription / entitlement**
-- `enterprise.dim_entitlement` (+ history)
-- `enterprise.dim_subscription` (+ history)
-- `enterprise.free_entitlement`
-- `pricing_mart.product_price_catalog`
-
-</div>
-
-<div class="two-col">
-
-**Customer**
-- `customer360.customer_life_cycle_vw`
-- `analytic_feature.customer_type`
-
-**Traffic**
-- `gd_traffic_mart.analytic_traffic_agg`
-- `gd_traffic_mart.analytic_traffic_detail`
-
-</div>
-
-> CATALOG.md tracks status per table: `planned` → `ready` → `enriched` → `stale`.
-
----
-
-# Lessons we paid for so we don't have to again
-
-- **Alation's Catalog Set Description doesn't live where the docs say.** It's at
-  `/api/v1/table/<id>/` under `shared_catalog_sets[].description`, not at
-  `/integration/v2/custom_field_value/?otype=dynamic_set_property` (which only
-  returns Title for catalog sets).
-- **Lake registry uses hyphens, Alation/SQL use underscores.** Configs split this; tools take the form they expect.
-- **`mu launch --keep-container` outlives `mu launch`** — workspace cleanup must `docker stop` the container first, not just SIGTERM the launcher.
-- **`COMMENT` casing is non-uniform** — agents emit both `COMMENT` and `comment`; downstream parsing must be case-insensitive.
-- **Stage `output:` is markdown, not arbitrary file.** The framework wraps it; agents append, don't overwrite.
-
-> All captured in `missions/column-comments/CLAUDE.md` so the next iteration doesn't relearn them.
-
-<!--
-Engineers love war stories. This slide builds credibility — we've actually
-shipped this and ironed out the edges.
--->
-
----
-
-# Limitations & roadmap
-
-**Today:**
-- Sonnet-only (cost: ~$0.50–$1.50 per table run)
-- Per-table sequential runs; no batch mode
-- Manual PR step from `validated-table.ddl` → `gdcorp-dna/lake`
-- Confluence search noise filter is hand-tuned; may miss design pages with unusual titles
-
-**Considering:**
-- Batch run-all-`stale`-tables driven by `CATALOG.md`
-- Re-enrich on schema change (detect via `git log` on the DDL file)
-- Auto-PR back to `gdcorp-dna/lake` (gated by CI lint)
-- Extend to column descriptions in Tableau / Looker downstream
-
-**Not on roadmap:**
-- Real-time / on-the-fly enrichment (mission is batch by design)
-- Replacing the Column Description Standard (this mission *applies* it)
-
----
-
 # Try it
 
 ```bash
@@ -465,7 +368,7 @@ cp .env.local.example .env.local        # fill in tokens
 - `docs/creating-a-new-config.md` — config-authoring playbook
 - `CLAUDE.md` — gotchas & API quirks (the war stories)
 
-**Owner:** `@mzwolak` · **Built with:** Moon Units, Claude Sonnet 4.6, Alation API, Confluence API
+**Built with:** Moon Units, Claude Sonnet 4.6, Alation API, Confluence API
 
 ---
 
