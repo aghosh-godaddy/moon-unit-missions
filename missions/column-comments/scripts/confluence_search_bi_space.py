@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Search the Confluence BI space for candidate design-doc pages for a table.
 
-Useful when Alation metadata has no Confluence link. Runs one or more CQL text searches,
-filters out known noise (JIRA reports, bi-weekly updates, dashboards, etc.), and fetches
-a short body excerpt so you can judge relevance.
+Useful when Alation metadata has no Confluence link. For each search term, runs a
+narrow `title ~` query first (so an exact-name design page surfaces regardless of
+its rank in the broader text search), then a `text ~` query subject to the noise
+filter (JIRA reports, bi-weekly updates, dashboards, etc.) and per-term `--limit`.
+Each hit's `match` field reports which query found it. CQL `~` is case-insensitive.
+Fetches a short body excerpt so you can judge relevance.
 
 Required env:
   ATLASSIAN_EMAIL, ATLASSIAN_API_TOKEN
@@ -82,27 +85,32 @@ def main() -> int:
                     help="Skip body-excerpt fetch (faster, no relevance hints).")
     args = ap.parse_args()
 
+    # Title matches first (narrow, high-signal — exact-name design docs land
+    # here regardless of where they rank in the broader text search). Then
+    # text matches, which are subject to the noise filter and the per-term limit.
     all_hits: dict[str, dict] = {}
     for term in args.terms:
-        cql = f'space = {args.space} AND type = page AND text ~ "{term}"'
-        try:
-            rows = search(cql, args.limit)
-        except Exception as e:
-            print(f"skip {term!r}: {e}", file=sys.stderr)
-            continue
-        for r in rows:
-            pid = r.get("id")
-            if not pid or pid in all_hits:
+        for field, apply_noise_filter in (("title", False), ("text", True)):
+            cql = f'space = {args.space} AND type = page AND {field} ~ "{term}"'
+            try:
+                rows = search(cql, args.limit)
+            except Exception as e:
+                print(f"skip {field}~{term!r}: {e}", file=sys.stderr)
                 continue
-            title = r.get("title") or ""
-            if not args.no_noise_filter and DEFAULT_NOISE.search(title):
-                continue
-            all_hits[pid] = {
-                "term": term,
-                "title": title,
-                "id": pid,
-                "url": f"{BASE}{r.get('_links', {}).get('webui', '')}",
-            }
+            for r in rows:
+                pid = r.get("id")
+                if not pid or pid in all_hits:
+                    continue
+                title = r.get("title") or ""
+                if apply_noise_filter and not args.no_noise_filter and DEFAULT_NOISE.search(title):
+                    continue
+                all_hits[pid] = {
+                    "term": term,
+                    "match": field,
+                    "title": title,
+                    "id": pid,
+                    "url": f"{BASE}{r.get('_links', {}).get('webui', '')}",
+                }
 
     results = list(all_hits.values())
     if not args.no_excerpts:

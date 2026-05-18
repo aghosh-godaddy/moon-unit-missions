@@ -56,8 +56,13 @@ resolution (optional `--resolve-tiny-links`) also needs `ATLASSIAN_EMAIL` and
 ## `confluence_search_bi_space.py`
 
 Search a Confluence space (defaults to `BI`) for pages matching one or more
-terms. Filters known-noisy titles (weekly JIRA reports, dashboards,
-bi-weeklies, …) and fetches a body excerpt so you can judge relevance.
+terms. For each term, runs a narrow `title ~` query first (high-signal,
+exact-name design docs surface here regardless of broader-text rank), then a
+`text ~` query (subject to the noise filter and per-term `--limit`). Each
+hit's `match` field reports which query found it. CQL `~` is case-insensitive,
+so the search term's casing doesn't matter. Filters known-noisy titles (weekly
+JIRA reports, dashboards, bi-weeklies, …) on text matches and fetches a body
+excerpt so you can judge relevance.
 
 Use when: Alation has no Confluence link for the table and you need to hunt
 for a design doc by name.

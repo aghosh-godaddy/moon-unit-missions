@@ -8,6 +8,10 @@ api-keys.txt
 .watcher.log
 .manifest.generated.yaml
 
+# Per-run shell-redirect logs from chained launches; same content as the
+# in-flight mu log, not part of the committed audit trail.
+missions/column-comments/output/**/run.log
+
 # Per-run scratch space (cloned repos, intermediate files; outputs are
 # copied out to output/<db>/<table>/ on completion)
 missions/column-comments/output/**/.workspace/
