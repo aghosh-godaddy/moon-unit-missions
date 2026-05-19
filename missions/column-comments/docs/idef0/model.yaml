@@ -1,0 +1,236 @@
+model:
+  title: "Column Comments Enrichment Mission"
+  author: "Claude"
+  date: "2026-05-19"
+  version: "0.2"
+  purpose: >
+    Functional decomposition of the Moon Units column-comments mission:
+    how a target Data Lake table's DDL is enriched in place with
+    standardized, ≤255-char COMMENT clauses governed by GoDaddy's
+    Column Description Standard and the Certified Data Dictionary,
+    and how the enriched DDL plus an audit trail are published.
+  viewpoint: "Data Governance engineer operating the mission"
+
+glossary:
+  - term: "Target Table DDL"
+    definition: "The table.ddl file in gdcorp-dna/lake under catalog/config/prod/.../<db>/<table>/ for the chosen table."
+  - term: "Per-Table Config"
+    definition: "config/<db>/<table>.yaml — Confluence URLs, reference tables, Alation toggle; consumed by run.sh."
+  - term: "Column Description Standard"
+    definition: "Data Governance Council ruleset: annotations (@PrimaryKey, @ForeignKey, @Enumerated), units, AI-search phrasing."
+  - term: "255-Char Limit"
+    definition: "Hard upper bound on each COMMENT string enforced by the lake DDL contract."
+  - term: "Certified Data Dictionary"
+    definition: "Alation Document Folder 6 — authoritative term/abbreviation expansions (e.g. GCR = Gross Cash Receipts)."
+  - term: "Moon Units Stage Conventions"
+    definition: "Manifest schema and stage envelope rules (header/body/footer; output: <name>.md)."
+  - term: "Run Workspace"
+    definition: "Bind-mounted .workspace/ where INPUT.md, repos/, and stage .md files live during the run."
+  - term: "Lake Repo Checkout"
+    definition: "Cloned gdcorp-dna/lake under repos/lake/ inside the run workspace."
+  - term: "Research Report"
+    definition: "research.md — DDL excerpts, table.yaml metadata, Confluence summaries, Alation columns, dictionary mappings."
+  - term: "Enriched DDL"
+    definition: "table.ddl rewritten in place with COMMENT clauses on every column."
+  - term: "Validated DDL"
+    definition: "Enriched DDL after the validate stage's 255-char enforcement pass — the authoritative in-repo file."
+  - term: "Audit Artifacts"
+    definition: "Per-run output/<db>/<table>/ contents: INPUT.md, research/enrich/validate .md, original/enriched/validated -table.ddl, ddl-comparison.md."
+  - term: "Moon Units Framework"
+    definition: "mu CLI plus the Docker container that executes the staged manifest pipeline."
+  - term: "Claude Sonnet Agent"
+    definition: "claude-sonnet-4-6 instance executing a single stage prompt inside the container."
+  - term: "Lake Registry"
+    definition: "External system: gdcorp-dna/lake Git repository hosted on GitHub; source of the target DDL."
+  - term: "Alation API"
+    definition: "Catalog REST API used for table/column metadata and Document Folder 6."
+  - term: "Confluence API"
+    definition: "Atlassian REST API used for BI-space design pages."
+
+diagrams:
+  - id: A-0
+    title: "Column Comments Mission (Context)"
+    activities:
+      - { id: A0, name: "Enrich Data Lake Table DDL with Standardized Column Comments" }
+    arrows:
+      - { id: I1, label: "Target Table DDL",  from: { boundary: left }, to: { activity: A0, side: left } }
+      - { id: C0, label: "Per-Table Config",  from: { boundary: top },  to: { activity: A0, side: top } }
+      - { id: C1, label: "Column Description Standard", from: { boundary: top }, to: { activity: A0, side: top } }
+      - { id: C2, label: "255-Char Limit",              from: { boundary: top }, to: { activity: A0, side: top } }
+      - { id: C3, label: "Certified Data Dictionary",   from: { boundary: top }, to: { activity: A0, side: top } }
+      - { id: C4, label: "Moon Units Stage Conventions", from: { boundary: top }, to: { activity: A0, side: top } }
+      - { id: O1, label: "Validated DDL",     from: { activity: A0, side: right }, to: { boundary: right } }
+      - { id: O2, label: "Audit Artifacts",   from: { activity: A0, side: right }, to: { boundary: right } }
+      - { id: M1, label: "Moon Units Framework", from: { boundary: bottom }, to: { activity: A0, side: bottom } }
+      - { id: M2, label: "Claude Sonnet Agent",  from: { boundary: bottom }, to: { activity: A0, side: bottom } }
+      - { id: M3, label: "Alation API",          from: { boundary: bottom }, to: { activity: A0, side: bottom } }
+      - { id: M4, label: "Confluence API",       from: { boundary: bottom }, to: { activity: A0, side: bottom } }
+      - { id: M5, label: "Lake Registry",        from: { boundary: bottom }, to: { activity: A0, side: bottom } }
+
+  - id: A0
+    title: "Enrich Data Lake Table DDL with Standardized Column Comments"
+    parent: A-0
+    activities:
+      - { id: A1, name: "Prepare Run Inputs and Workspace" }
+      - { id: A2, name: "Research Table Context" }
+      - { id: A3, name: "Enrich DDL with Column Comments" }
+      - { id: A4, name: "Validate Comment Length" }
+      - { id: A5, name: "Publish Audit Artifacts" }
+    arrows:
+      # Boundary inputs (mirror A-0)
+      - { id: I1, label: "Target Table DDL", from: { boundary: left }, to: { activity: A1, side: left } }
+      # Boundary controls (mirror A-0; fan out to relevant children)
+      - id: C0
+        label: "Per-Table Config"
+        from: { boundary: top }
+        to:
+          - { activity: A1, side: top }
+          - { activity: A2, side: top }
+      - id: C1
+        label: "Column Description Standard"
+        from: { boundary: top }
+        to:
+          - { activity: A3, side: top }
+      - id: C2
+        label: "255-Char Limit"
+        from: { boundary: top }
+        to:
+          - { activity: A3, side: top }
+          - { activity: A4, side: top }
+      - id: C3
+        label: "Certified Data Dictionary"
+        from: { boundary: top }
+        to:
+          - { activity: A2, side: top }
+      - id: C4
+        label: "Moon Units Stage Conventions"
+        from: { boundary: top }
+        to:
+          - { activity: A1, side: top }
+          - { activity: A5, side: top }
+      # Boundary mechanisms (mirror A-0)
+      - id: M1
+        label: "Moon Units Framework"
+        from: { boundary: bottom }
+        to:
+          - { activity: A1, side: bottom }
+          - { activity: A5, side: bottom }
+      - id: M2
+        label: "Claude Sonnet Agent"
+        from: { boundary: bottom }
+        to:
+          - { activity: A2, side: bottom }
+          - { activity: A3, side: bottom }
+          - { activity: A4, side: bottom }
+      - { id: M3, label: "Alation API",    from: { boundary: bottom }, to: { activity: A2, side: bottom } }
+      - { id: M4, label: "Confluence API", from: { boundary: bottom }, to: { activity: A2, side: bottom } }
+      - { id: M5, label: "Lake Registry",  from: { boundary: bottom }, to: { activity: A1, side: bottom } }
+      # Internal flow
+      - id: int_workspace_to_research
+        label: "Run Workspace + INPUT.md"
+        from: { activity: A1, side: right }
+        to: { activity: A2, side: left }
+      - id: int_repo_to_publish
+        label: "Lake Repo Checkout"
+        from: { activity: A1, side: right }
+        to: { activity: A5, side: left }
+      - id: int_research_to_enrich
+        label: "Research Report"
+        from: { activity: A2, side: right }
+        to: { activity: A3, side: left }
+      - id: int_research_md
+        label: "research.md"
+        from: { activity: A2, side: right }
+        to: { activity: A5, side: left }
+      - id: int_enriched_ddl
+        label: "Enriched DDL"
+        from: { activity: A3, side: right }
+        to: { activity: A4, side: left }
+      - id: int_enrich_md
+        label: "enrich.md"
+        from: { activity: A3, side: right }
+        to: { activity: A5, side: left }
+      - id: int_validate_md
+        label: "validate.md"
+        from: { activity: A4, side: right }
+        to: { activity: A5, side: left }
+      # A4 fans the Validated DDL out to BOTH the system boundary (O1) and A5 (snapshot).
+      # This is the canonical IDEF0 fan-out: one logical artifact, two endpoints.
+      - id: O1
+        label: "Validated DDL"
+        from: { activity: A4, side: right }
+        to:
+          - { boundary: right }
+          - { activity: A5, side: left }
+      - id: O2
+        label: "Audit Artifacts"
+        from: { activity: A5, side: right }
+        to: { boundary: right }
+
+  - id: A2
+    title: "Research Table Context"
+    parent: A0
+    activities:
+      - { id: A21, name: "Read Table DDL and Metadata" }
+      - { id: A22, name: "Fetch Confluence Design Pages" }
+      - { id: A23, name: "Query Alation Catalog Metadata" }
+      - { id: A24, name: "Load Certified Data Dictionary" }
+      - { id: A25, name: "Compile Research Report" }
+    arrows:
+      # Inbound from A1 in the parent diagram — shown as a tunneled boundary input
+      # (no parent boundary counterpart on A0; it is an A0-internal arrow). Tunneling
+      # documents the shortcut so the model stays self-consistent at this level.
+      - id: int_workspace_to_research
+        label: "Run Workspace + INPUT.md"
+        from: { boundary: left, tunneled: true }
+        to:
+          - { activity: A21, side: left }
+          - { activity: A22, side: left }
+          - { activity: A23, side: left }
+      # Boundary controls — mirror A2's boundary controls in A0 (C0, C3) by id+side
+      - id: C0
+        label: "Per-Table Config"
+        from: { boundary: top }
+        to:
+          - { activity: A21, side: top }
+          - { activity: A22, side: top }
+          - { activity: A23, side: top }
+          - { activity: A25, side: top }
+      - id: C3
+        label: "Certified Data Dictionary"
+        from: { boundary: top }
+        to:
+          - { activity: A24, side: top }
+      # Boundary mechanisms — mirror A2's boundary mechanisms in A0 (M2, M3, M4)
+      - id: M2
+        label: "Claude Sonnet Agent"
+        from: { boundary: bottom }
+        to:
+          - { activity: A21, side: bottom }
+          - { activity: A22, side: bottom }
+          - { activity: A23, side: bottom }
+          - { activity: A24, side: bottom }
+          - { activity: A25, side: bottom }
+      - id: M3
+        label: "Alation API"
+        from: { boundary: bottom }
+        to:
+          - { activity: A23, side: bottom }
+          - { activity: A24, side: bottom }
+      - { id: M4, label: "Confluence API", from: { boundary: bottom }, to: { activity: A22, side: bottom } }
+      # Internal aggregation into the report compiler
+      - { id: int_ddl_excerpts,    label: "DDL + table.yaml Excerpts",         from: { activity: A21, side: right }, to: { activity: A25, side: left } }
+      - { id: int_conf_summaries,  label: "Confluence Page Summaries",         from: { activity: A22, side: right }, to: { activity: A25, side: left } }
+      - { id: int_alation_columns, label: "Alation Columns + Source Comments", from: { activity: A23, side: right }, to: { activity: A25, side: left } }
+      - { id: int_abbrev_mappings, label: "Abbreviation Mappings",             from: { activity: A24, side: right }, to: { activity: A25, side: left } }
+      # Boundary outputs — the same artifact A2 emits in the parent diagram (Research
+      # Report and research.md). These are A0-internal arrows in the parent, so they
+      # are exposed as tunneled boundary outputs here.
+      - id: out_research_report
+        label: "Research Report"
+        from: { activity: A25, side: right }
+        to: { boundary: right, tunneled: true }
+      - id: out_research_md
+        label: "research.md"
+        from: { activity: A25, side: right }
+        to: { boundary: right, tunneled: true }
