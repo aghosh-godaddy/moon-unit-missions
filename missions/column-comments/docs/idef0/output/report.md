@@ -124,8 +124,8 @@ A-0 Column Comments Mission (Context)
 
 | Term | Definition |
 |------|------------|
-| Target Table DDL | The table.ddl file in gdcorp-dna/lake under catalog/config/prod/.../<db>/<table>/ for the chosen table. |
-| Per-Table Config | config/<db>/<table>.yaml — Confluence URLs, reference tables, Alation toggle; consumed by run.sh. |
+| Target Table DDL | The table.ddl file in gdcorp-dna/lake under catalog/config/prod/.../\<db>/\<table>/ for the chosen table. |
+| Per-Table Config | config/\<db>/\<table>.yaml — Confluence URLs, reference tables, Alation toggle; consumed by run.sh. |
 | Column Description Standard | Data Governance Council ruleset: annotations (@PrimaryKey, @ForeignKey, @Enumerated), units, AI-search phrasing. |
 | 255-Char Limit | Hard upper bound on each COMMENT string enforced by the lake DDL contract. |
 | Certified Data Dictionary | Alation Document Folder 6 — authoritative term/abbreviation expansions (e.g. GCR = Gross Cash Receipts). |
@@ -135,7 +135,7 @@ A-0 Column Comments Mission (Context)
 | Research Report | research.md — DDL excerpts, table.yaml metadata, Confluence summaries, Alation columns, dictionary mappings. |
 | Enriched DDL | table.ddl rewritten in place with COMMENT clauses on every column. |
 | Validated DDL | Enriched DDL after the validate stage's 255-char enforcement pass — the authoritative in-repo file. |
-| Audit Artifacts | Per-run output/<db>/<table>/ contents: INPUT.md, research/enrich/validate .md, original/enriched/validated -table.ddl, ddl-comparison.md. |
+| Audit Artifacts | Per-run output/\<db>/\<table>/ contents: INPUT.md, research/enrich/validate .md, original/enriched/validated -table.ddl, ddl-comparison.md. |
 | Moon Units Framework | mu CLI plus the Docker container that executes the staged manifest pipeline. |
 | Claude Sonnet Agent | claude-sonnet-4-6 instance executing a single stage prompt inside the container. |
 | Lake Registry | External system: gdcorp-dna/lake Git repository hosted on GitHub; source of the target DDL. |
