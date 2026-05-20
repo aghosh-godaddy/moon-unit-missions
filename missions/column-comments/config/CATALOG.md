@@ -38,6 +38,9 @@ Per-table configs live at `config/<db_name>/<table_name>.yaml`. This file is **o
 | enterprise | free_entitlement | standard | enriched | @mzwolak | [config](enterprise/free-entitlement.yaml) | 1 Confluence URL from BI space search (Current Design Challenges); 2 manual reference tables (lake lineage has only raw godaddy_txlog upstream; added sibling enterprise entitlement tables) |
 | gd_traffic_mart | analytic_traffic_agg | standard | enriched | @mzwolak | [config](gd-traffic-mart/analytic-traffic-agg.yaml) | 1 Confluence URL from Alation; 1 reference tables from lineage (1/1 curated) |
 | gd_traffic_mart | analytic_traffic_detail | standard | enriched | @mzwolak | [config](gd-traffic-mart/analytic-traffic-detail.yaml) | 3 Confluence URLs from Alation; 6 reference tables from lineage (6/6 curated) |
+| customer360 | dim_customer_vw | dlms-api | enriched | @mzwolak | [config](customer360/dim-customer-vw.yaml) | 1 Confluence URL from Alation (Customer360 design); 1 manual reference table (sibling customer_life_cycle_vw — lake lineage upstreams are all raw `_snap` sources, filtered out) |
+| customer360 | dim_customer_history_vw | dlms-api | enriched | @mzwolak | [config](customer360/dim-customer-history-vw.yaml) | 1 Confluence URL from Alation (Customer360 design); 2 manual reference tables (base table dim_customer_vw + sibling customer_life_cycle_vw — lineage upstreams are raw `_snap` sources) |
+| customer360 | customer_metric_daily_agg_vw | dlms-api | enriched | @mzwolak | [config](customer360/customer-metric-daily-agg-vw.yaml) | 2 Confluence URLs from Alation (Customer Lifecycle + Customer360); 1 reference table from lineage (1/1 curated: customer_life_cycle_vw) |
 | _example_ | _example-table_ | _standard_ | _planned_ | _@handle_ | _—_ | _one-line purpose / context_ |
 
 ## How to add a row
