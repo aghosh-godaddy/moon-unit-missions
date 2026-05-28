@@ -15,6 +15,10 @@ missions/column-comments/output/**/run.log
 # Per-run scratch space (cloned repos, intermediate files; outputs are
 # copied out to output/<db>/<table>/ on completion)
 missions/column-comments/output/**/.workspace/
+missions/table-metadata/output/**/.workspace/
+
+# Per-run shell-redirect logs from chained launches
+missions/table-metadata/output/**/run.log
 
 # macOS
 .DS_Store

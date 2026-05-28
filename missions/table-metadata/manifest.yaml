@@ -1,0 +1,395 @@
+version: "1"
+input:
+  source: table-metadata
+  url: "__GENERATED_BY_RUN_SH__"
+  content: "__GENERATED_BY_RUN_SH__"
+
+plan:
+  repositories:
+    - url: "__GENERATED_BY_RUN_SH__SOURCE_REPO_URL__"
+      writable: false
+      description: >
+        Source repository containing the authoritative PySpark script and related
+        DAG/DDL/policy/data-quality folders.
+    - url: https://github.com/gdcorp-dna/lake.git
+      writable: false
+      description: >
+        GoDaddy Data Lake registry. Contains table DDL and metadata YAML files
+        under catalog/config/prod/us-west-2/<db>/<table>/ or
+        catalog/config/prod/dlms-api/us-west-2/<db>/<table>/.
+
+  stages:
+    - name: gather
+      model: claude-sonnet-4-6
+      skills: []
+      output: gather.md
+      prompt: |
+        You are a Data Governance analyst. Your job is to gather ONLY verifiable facts
+        about a Data Lake table from the authoritative ETL code and supporting sources.
+        Do not guess. If something is unknown, say "Unknown" and explain what you checked.
+
+        ## Source-of-truth rule
+        The PySpark script and the DAG that calls it are the source of truth. If Alation,
+        Confluence, DDL, policies, or other docs conflict with code, treat the code as
+        correct and record the discrepancy for validation.
+
+        ## Step 1: Read INPUT.md
+        Read `INPUT.md` in your workspace. It contains:
+        - PySpark GitHub URL + parsed repo/ref/path
+        - Repository folder names inside the container (under `repos/`)
+        - Optional lake table override
+        - Supporting docs (Confluence URLs, other URLs)
+        - Alation configuration
+
+        Use INPUT.md as the contract for what to fetch and where to look.
+
+        ## Step 2: Check out the exact Git ref for the source repo
+        INPUT.md includes the desired git ref (branch/tag/SHA) and the source repo URL.
+        The Moon Units framework clones repos into `repos/<repo-name>/` where repo-name is
+        derived from the git URL (e.g., `https://github.com/org/my-repo.git` → `repos/my-repo/`).
+
+        Determine the source repo folder name from the URL in INPUT.md (strip org and .git).
+        Then checkout the desired ref:
+
+        ```bash
+        # Example: if source repo URL is https://github.com/gdcorp-dna/my-repo.git
+        # then folder is repos/my-repo/
+        git -C repos/<repo-name> fetch --all --tags
+        git -C repos/<repo-name> checkout <ref_from_INPUT_md>
+        ```
+
+        ## Step 3: Read the PySpark script and the calling DAG
+        - Read the PySpark file at the path from INPUT.md.
+        - Locate and read the DAG file that calls it. Per repo convention, from the parent
+          folder of the pyspark folder you should find sibling folders: `dag/`, `policies/`,
+          `data_quality/`, `ddl/`.
+        - The DAG must be treated as authoritative for schedule/cadence, dependencies, and
+          which job/version is run.
+
+        ## Step 4: Collect nearby repo context (secondary sources)
+        - Read relevant files under sibling folders:
+          - `ddl/` (table DDLs) — helpful but may be stale
+          - `policies/` — helpful but may be stale
+          - `data_quality/` — checks and expectations (treat as evidence, not truth)
+        Record any conflicts with code explicitly.
+
+        ## Step 5: Fetch Confluence pages (if provided)
+        For each URL in INPUT.md under CONFLUENCE PAGES, fetch page content via Atlassian REST API.
+        The page ID is the numeric part of the URL path.
+
+        **IMPORTANT: Parent pages may link to child pages.** A provided URL might be a parent/hub
+        page (e.g., "Customer360") containing links to multiple child pages for individual tables.
+        You MUST:
+        1. Fetch the provided page first.
+        2. List its child pages using:
+           ```bash
+           curl -s -u "$ATLASSIAN_CREDS" \
+             "https://godaddy-corp.atlassian.net/wiki/rest/api/content/{PAGE_ID}/child/page?limit=50"
+           ```
+        3. From the child pages, identify which ones are relevant to the target table
+           (match by table name, job name, or domain keywords).
+        4. Fetch ONLY the relevant child pages (not all of them).
+        5. If the provided page itself has useful content, use it too.
+
+        Credentials:
+        - Prefer `MOONUNIT_JIRA` env var (JSON: {"url","email","api_token"}) OR
+        - `MOONUNIT_ATLASSIAN` env var (JSON: {"email","api_token"})
+
+        Example:
+        ```bash
+        ATLASSIAN_CREDS=$(node -e "const j=JSON.parse(process.env.MOONUNIT_JIRA || process.env.MOONUNIT_ATLASSIAN); console.log(j.email + ':' + j.api_token)")
+        curl -s -u "$ATLASSIAN_CREDS" \
+          "https://godaddy-corp.atlassian.net/wiki/rest/api/content/{PAGE_ID}?expand=body.storage"
+        ```
+
+        Extract only content relevant to business meaning, grain, metrics, filters, SLAs, ownership.
+
+        ## Step 6: Alation lookup (if enabled)
+        If INPUT.md says Alation is enabled:
+        1. First check if `MOONUNIT_ALATION` env var is available:
+        ```bash
+        node -e "if(!process.env.MOONUNIT_ALATION){console.log('MOONUNIT_ALATION not set');process.exit(1)}else{console.log('OK')}"
+        ```
+        If it's not available, skip Alation and note this in gather.md under "Alation: skipped (credentials not available)".
+
+        2. If available, create API token:
+        ```bash
+        ALATION_CREDS=$(node -e "const j=JSON.parse(process.env.MOONUNIT_ALATION); console.log(JSON.stringify({refresh_token:j.refresh_token, user_id:j.user_id}))")
+        TOKEN=$(curl -s -X POST "https://godaddy.alationcloud.com/integration/v1/createAPIAccessToken/" \
+          -H "Content-Type: application/json" \
+          -d "$ALATION_CREDS" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).api_access_token))")
+        ```
+
+        3. **Fetch table entries for the target table name** (once you know it from code analysis).
+           Search Alation for the table by name to find BOTH the Redshift Serverless and Lake entries:
+        ```bash
+        curl -s -H "Token: $TOKEN" \
+          "https://godaddy.alationcloud.com/integration/v2/table/?name=<TABLE_NAME>&limit=50"
+        ```
+           From the results, identify:
+           - **Redshift Serverless Dev entry**: look for entries where the key contains
+             a Redshift data source (often has "Redshift" or "Serverless" in the ds_name
+             or the key path). Record its Alation table ID.
+           - **Lake entry**: look for entries where the key matches the Hive/Glue catalog
+             (often contains the schema directly like `<schema>.<table>`). Record its Alation table ID.
+
+           Construct Alation URLs as: `https://godaddy.alationcloud.com/table/<ID>/`
+
+        4. Record in gather.md under "## Alation" a structured block:
+           - Redshift table: name, database, schema, Alation URL
+           - Lake table: name, schema, Alation URL
+           - Any descriptions or custom fields found
+
+        ## Step 7: Output (append to gather.md)
+        Append a structured, evidence-oriented report including:
+        - PySpark job identity (repo/ref/path), and the exact output write target(s) found (if any)
+        - DAG identity (path, schedule, params calling the PySpark)
+        - Enumerated upstream/local tables referenced in the PySpark
+        - Any DDL/policy/DQ files consulted and what they claim
+        - Confluence summaries (if any)
+        - Alation section with:
+          - Redshift Serverless table info (table name, database, schema, Alation URL)
+          - Lake table Alation URL
+          - Any descriptions or custom fields retrieved
+        - A "Conflicts / discrepancies" section listing any contradictions with the code
+
+    - name: analyze
+      model: claude-sonnet-4-6
+      skills: []
+      output: analyze.md
+      prompt: |
+        You are a Data Engineering + Data Governance analyst. Your job is to resolve lineage
+        from the PySpark job to the authoritative Data Lake table, and extract only accurate,
+        evidence-backed metadata.
+
+        ## Step 1: Read INPUT.md and gather.md
+        - Read `INPUT.md` and the previous stage output `gather.md`.
+
+        ## Step 2: Identify the target table
+        Determine the final output lake table populated by this PySpark job.
+        - Prefer direct evidence in code: table write targets, create/insert statements,
+          saveAsTable targets, Glue catalog writes, Athena CTAS, etc.
+        - If `lake_table_override` is provided in INPUT.md, use it only if it does not
+          contradict the code; otherwise flag the conflict.
+        - If multiple outputs exist, list them. Identify the “primary” one if possible.
+
+        ## Step 3: Deep lineage resolution — MANDATORY for EVERY source table
+
+        The PySpark script references upstream tables. Some are lake tables (in `repos/lake/`),
+        but many are **local/intermediate tables** (e.g., `customer_core_conformed.*`,
+        `analytic_local.*`, `*_stg`) that are built by OTHER PySpark scripts in the SAME repo.
+
+        **You MUST recursively trace EACH source table to its lake origin. Do NOT stop at
+        intermediate tables. They are implementation details, not authoritative sources.**
+
+        For EACH table referenced in the target PySpark:
+
+        1. **Check if it exists as a lake table**: search `repos/lake/catalog/config/prod/` for it.
+           Try both `us-west-2/<schema>/<table-hyphenated>/` and `dlms-api/us-west-2/<schema>/<table-hyphenated>/`.
+           Convert underscores to hyphens when searching lake paths.
+
+        2. **If it IS a lake table** -> record it as the authoritative source. Read its `table.yaml`
+           and `table.ddl`. Done for this table.
+
+        3. **If it is NOT a lake table** (local/intermediate) — you MUST trace upstream:
+           a. Search the source repo for the PySpark script that BUILDS this intermediate table.
+              Use `grep -r "<table_name>" repos/<source-repo>/` to find references.
+              Look for `insertInto`, `saveAsTable`, `CREATE TABLE`, or write operations targeting it.
+           b. Read that upstream PySpark script.
+           c. Identify what tables IT reads from.
+           d. For each of THOSE tables, repeat from step 1 (recursive traversal).
+           e. Continue until you reach a lake table or an external system (S3 direct read, API, etc.).
+
+        4. **If traversal fails** (cannot find the upstream script, or it reads from an unknown source):
+           Record: `UNRESOLVED: <table_name> — <what you searched and why it failed>`
+
+        **CRITICAL RULE FOR C1 (Column Reference):**
+        The "Source Table(s)" column in C1 must show the FINAL lake table (or external system),
+        NOT intermediate/local tables. For example:
+        - BAD:  `customer_core_conformed.active_customer_stg`  (this is an intermediate table)
+        - GOOD: `enterprise.dim_subscription` (this is the lake table that feeds active_customer_stg)
+        - GOOD: `UNRESOLVED — requires manual input` (if traversal failed)
+
+        If a column aggregates data from multiple lake sources through an intermediate table,
+        list all the lake sources that contribute.
+
+        ## Step 4: Read lake registry artifacts for ALL resolved upstream tables
+        For EACH lake table discovered during lineage traversal (not just the target), read:
+        - `table.ddl` — authoritative schema with column names and types
+        - `table.yaml` — lineage metadata, consumer groups, SLA info
+
+        Build a column-level mapping: `target_column -> intermediate_table.column -> lake_table.column`
+
+        ## Step 5: Derive analysis outputs (no guessing)
+        Derive the following, strictly from code + resolved lake artifacts:
+        - Grain: what one row represents
+        - Keys: primary key / unique key strategy (or explicitly "no PK" + dedup guidance)
+        - Partitions and recommended always-filter columns
+        - Always-on filters embedded in ETL (non-overridable scope restrictions)
+        - Common business metrics computed in the ETL (name + definition + grain)
+        - **Column-level lineage** (CRITICAL): for EACH column in the target table, trace it
+          to its ultimate lake source table and column. If the column is computed/derived,
+          note the formula AND the lake source columns feeding it. If lineage cannot be
+          fully resolved after recursive traversal, mark it as UNRESOLVED.
+        - SLA/refresh schedule from the DAG (cron, dependencies, expected latency)
+
+        ## Step 6: Output (append to analyze.md)
+        Append:
+        - Target table resolution (with evidence and any overrides)
+        - **Full lineage resolution table** showing for each intermediate table:
+          | Intermediate Table | Resolved To (Lake Table) | Resolution Method |
+          Include UNRESOLVED entries with explanation of what was searched.
+        - Column-level lineage mapping (target_column -> lake_table.column) for all columns
+        - A structured "facts" block for each of the 20 sections (A1..E3) listing
+          what can be filled and what is missing
+        - A "Do not claim" list: items that are tempting but not proven
+
+        ## Step 7: Write resolved-target machine output (required)
+        Create a JSON file in the workspace root named `RESOLVED_TARGET.json` with:
+        - schema: string (e.g., "enterprise")
+        - table_hyphen: string (e.g., "payment-cogs-audit")
+        - table_underscore: string (e.g., "payment_cogs_audit")
+        - lake_table_path: string|null (e.g., "enterprise/payment-cogs-audit")
+        - confidence: "high"|"medium"|"low"
+        - evidence: array of short strings (file/line references)
+        If the target cannot be resolved, still write the file with nulls and a clear explanation in evidence.
+
+    - name: generate
+      model: claude-sonnet-4-6
+      skills: []
+      output: generate.md
+      prompt: |
+        You are an author producing a **Business Context / Metadata** document for a Data Lake table.
+        Your output must be 100% accurate. Never fabricate. Avoid too much technical implementation detail.
+
+        ## Step 1: Read INPUT.md, gather.md, analyze.md
+        Read:
+        - `INPUT.md`
+        - `gather.md`
+        - `analyze.md`
+        - `RESOLVED_TARGET.json`
+
+        ## Step 2: Create the final metadata document
+        Create a new markdown file in the workspace root named:
+        `TABLE_METADATA.md`
+
+        This file must follow the structure defined in `docs/Metadata-Structure.pdf`:
+        5 pillars, 20 sections, in order:
+        - A1, A2, A3
+        - B1, B2, B3
+        - C1..C8
+        - D1..D4
+        - E1..E3
+
+        Use this exact heading skeleton (keep headings even if content is missing):
+
+        - `# Business Context: <schema>.<table>`
+        - `## Pillar A: WHAT Is It? — Identity & Purpose`
+          - `### A1. Table Overview`
+          - `### A2. What This Table Is About`
+          - `### A3. Organizational Context & Ownership`
+        - `## Pillar B: WHY Does It Matter? — Value & Use Cases`
+          - `### B1. Key Business Value`
+          - `### B2. Primary Use Cases`
+          - `### B3. Advanced Analytics Use Cases`
+        - `## Pillar C: HOW Do I Use It Correctly? — Schema, Rules & Guidance`
+          - `### C1. Complete Column Reference with Data Insights`
+          - `### C2. Primary Key & Performance`
+          - `### C3. Key Features, Capabilities & Limitations`
+          - `### C4. Important Notes & Pitfalls`
+          - `### C5. Always-On Column Filters`
+          - `### C6. Common Business Metrics`
+          - `### C7. Glossary & Term Definitions`
+          - `### C8. Example Queries & Patterns`
+        - `## Pillar D: HOW Is It Built? — Pipeline & Provenance`
+          - `### D1. Data Source Reference`
+          - `### D2. Data Pipeline & Infrastructure`
+          - `### D3. SLA & Refresh Schedule`
+          - `### D4. Table Creation & ETL Implementation`
+        - `## Pillar E: HOW Is It Governed? — Quality, Standards & Ecosystem`
+          - `### E1. Data Quality Checks`
+          - `### E2. Best Practices & Tips`
+          - `### E3. Related Articles & Documentation`
+
+        Content guidance (follow the PDF):
+        - A1 should be a compact key-value table. The FIRST rows must be the access/identity
+          information in this exact order (if available from gather.md Alation section):
+            1. Table Name (the table name as seen in Redshift)
+            2. Database (e.g., "Redshift - Serverless - Dev")
+            3. Schema (the Redshift schema)
+            4. Alation URL (link to the Redshift table entry in Alation)
+            5. Lake Alation URL (link to the Lake table entry in Alation)
+          Then continue with the remaining technical metadata (Lake Table, Grain, Partition Key,
+          Storage Format, Data Tier, SLA, Refresh Cadence, etc.).
+          If Alation was skipped or URLs are unavailable, omit those rows but keep the rest.
+          A1 MUST include grain.
+        - B2 should be a bullet list of natural-language questions.
+        - C1 should be a single readable schema table with a "Source Table(s)" column.
+          **CRITICAL C1 RULE**: The "Source Table(s)" column must ONLY contain:
+            - Lake tables (e.g., `enterprise.dim_subscription`) — the ultimate authoritative source
+            - External systems (e.g., "S3 direct read")
+            - `UNRESOLVED - requires manual input` if analyze.md marked it unresolved
+          NEVER list intermediate/local/staging tables (e.g., `*_stg`, `*_conformed.*`,
+          `*_driver`) as sources. These are implementation details. Use the column-level
+          lineage mapping from analyze.md to find the lake table behind each intermediate table.
+        - C8 should include 2-5 short, annotated query patterns (avoid huge queries; keep focused).
+        - D2 should identify repo + file paths + orchestration tool + compute platform.
+        - D4 should summarize creation logic (no long code walk-through).
+
+        ### Requirements
+        - If a section cannot be completed accurately, include:
+          `<!-- REQUIRES_MANUAL_INPUT: <BA|DE|DG|DP> -->`
+          and briefly state what information is missing.
+        - Do not include long code blocks. Reference file paths + brief snippets only when needed.
+        - Do not assert owners, SLAs, or definitions unless supported by code or authoritative sources.
+        - Keep “pipeline identity” concise (repo, paths, DAG name, schedule), not a walkthrough.
+
+        ## Step 3: Append a stage summary to generate.md
+        Append to `generate.md`:
+        - Target table resolved (schema.table)
+        - Whether any sections require manual input (count + list)
+        - Key sources used (PySpark, DAG, lake table.ddl/table.yaml, Confluence, Alation)
+        - Any unresolved lineage items
+
+    - name: validate
+      model: claude-sonnet-4-6
+      skills: []
+      output: validate.md
+      prompt: |
+        You are a strict validation agent. Your job is to ensure the final metadata doc is:
+        1) accurate (no false claims) and 2) complete in structure (all 20 sections present).
+
+        ## Step 1: Read all artifacts
+        Read:
+        - `INPUT.md`
+        - `gather.md`
+        - `analyze.md`
+        - `RESOLVED_TARGET.json`
+        - `TABLE_METADATA.md`
+
+        ## Step 2: Accuracy validation
+        For each non-trivial claim in TABLE_METADATA.md (grain, keys, filters, metrics, SLA, lineage):
+        - Identify the exact evidence source (PySpark line, DAG setting, lake table.yaml, etc.)
+        - If evidence is missing or contradictory, rewrite the metadata doc to remove or soften the claim.
+        - If a claim cannot be validated, replace it with a REQUIRES_MANUAL_INPUT marker.
+
+        ## Step 2b: C1 Source Table validation (CRITICAL)
+        Scan the C1 "Source Table(s)" column in TABLE_METADATA.md. For EACH entry:
+        - If it references a local/intermediate/staging table (look for patterns like `*_stg`,
+          `*_conformed.*`, `*_driver`, `analytic_local.*`, or any table NOT in the lake registry),
+          this is a FAILURE. Replace it with:
+          - The actual lake table if analyze.md resolved it
+          - `UNRESOLVED - requires manual input` if analyze.md could not resolve it
+        - Only lake tables (those in `repos/lake/`) or external systems are acceptable as sources.
+
+        ## Step 3: Completeness validation
+        Ensure all 20 sections exist with the correct headings. If missing, add them.
+        If a section is too sparse and cannot be completed accurately, add the manual-input marker.
+
+        ## Step 4: Append a report to validate.md
+        Append:
+        - Target table
+        - PASS/FAIL for accuracy and completeness
+        - List of issues found + how they were fixed
+        - Sections requiring manual input (final list)
+

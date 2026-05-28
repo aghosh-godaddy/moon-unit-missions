@@ -1,0 +1,21 @@
+# Configuration for Table Metadata Generation Mission
+
+target:
+  # GitHub blob URL to the exact PySpark script that populates the table.
+  pyspark_url: "https://github.com/gdcorp-dna/REPLACE_ME/blob/main/src/path/to/pyspark/job.py"
+
+  # Optional: override if auto-detection of the lake table fails.
+  # Use lake registry naming: <db>/<table> with hyphenated table name.
+  lake_table_override: null  # e.g., "enterprise/payment-cogs-audit"
+
+sources:
+  # Supporting docs. These are secondary sources and must not contradict code.
+  confluence_pages: []
+
+  alation:
+    enabled: true
+    # Optional: override the Alation search query (defaults to detected db.table).
+    search_query: null
+
+  additional_docs: []
+
