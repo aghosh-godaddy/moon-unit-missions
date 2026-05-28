@@ -4,10 +4,14 @@ Your output must be 100% accurate. Never fabricate. Avoid too much technical imp
 
 ## Step 1: Read INPUT.md, gather.md, analyze.md
 Read:
-- `INPUT.md`
+- `INPUT.md` — includes USER NOTES (HIGHEST PRIORITY) if provided
 - `gather.md`
 - `analyze.md`
 - `RESOLVED_TARGET.json`
+
+**USER NOTES (if present in INPUT.md):** Treat as verified expert input from the
+table owner. Incorporate into A2, B1, C4, C7, and other relevant sections. USER NOTES
+override Confluence, Alation descriptions, and DDL — but NEVER override PySpark/DAG code.
 
 ## Step 2: Create the final metadata document
 Create a new markdown file in the workspace root named:
@@ -63,7 +67,30 @@ Content guidance (follow the PDF):
   Storage Format, Data Tier, SLA, Refresh Cadence, etc.).
   If Alation was skipped or URLs are unavailable, omit those rows but keep the rest.
   A1 MUST include grain.
-- B2 should be a bullet list of natural-language questions.
+- B2 must contain TWO parts:
+  1. **Questions this table answers** — bullet list of natural-language questions.
+  2. **Alation Queries** (if gather.md has ## Alation Queries with results) — for EACH
+     query, use this format (use empty string if a field is unknown):
+
+     #### Query: <Title or "Untitled">
+
+     | Field | Value |
+     |---|---|
+     | Query ID | <id> |
+     | Title | <title> |
+     | Author | <author> |
+     | Description | <description> |
+     | Schedule | <schedule or "Not scheduled"> |
+     | Last Saved | <date> |
+     | Last Run | <date> |
+     | Datasource | <datasource> |
+     | Alation Query URL | <url> |
+
+     ```sql
+     <SQL verbatim — do not modify>
+     ```
+
+     If Alation was skipped or no queries were found, omit the Alation Queries part.
 - C1 should be a single readable schema table with a "Source Table(s)" column.
   **CRITICAL C1 RULE**: The "Source Table(s)" column must ONLY contain:
     - Lake tables (e.g., `enterprise.dim_subscription`) — the ultimate authoritative source
@@ -95,61 +122,72 @@ Append to `generate.md`:
 
 ---
 
-## Generate Stage Summary — customer360.customer_metric_daily_agg_vw
+## Generate Stage — Summary
 
-**Generated:** 2026-05-28
+**Stage:** generate
+**Date:** 2026-05-28
 
 ### Target table resolved
-`customer360.customer_metric_daily_agg_vw` (high confidence)
-- Physical write target: `customer_core_conformed.customer_metric_daily_agg` (Hive/Parquet on S3)
-- Lake-registered canonical name: `customer360.customer_metric_daily_agg_vw`
-- Lake registry path: `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/`
+`customer360.customer_metric_daily_agg_vw` (HIGH confidence)
+- Lake path: `dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/`
+- Physical write target: `customer_core_conformed.customer_metric_daily_agg`
 
-### Sections requiring manual input
-**Count: 1**
+### Sections requiring manual input: 3
 
-| Section | Tag | What is missing |
+| Section | Tag | Missing Information |
 |---|---|---|
-| A1 (Table Overview) — Alation URLs | `REQUIRES_MANUAL_INPUT: DG` | Alation URLs for both Redshift Serverless and Lake entries; `MOONUNIT_ALATION` env var was not available at generation time |
+| A3 | `DG` | Individual data steward name — Alation shows group-level only (Franchise: Customer, group ID 47) |
+| A3 | `DG` | Data classification / PII sensitivity level — not documented in code or lake registry |
+| D3 | `DG` | Data retention policy — not documented in code, lake registry, or policy YAML |
 
 ### Key sources used
-| Source | Used for |
-|---|---|
-| PySpark: `customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py` | Business logic, grain, column derivations, write target, ETL steps |
-| DAG: `customer360/customer-metrics/src/dag/customer_metric_daily_agg_dag.py` | Schedule, SLA, dependencies, compute spec, task flow, ownership contacts |
-| Hive DDL: `customer360/customer-metrics/src/ddls/customer_metric_daily_agg.ddl` | Full column schema with DDL comments (32 cols + partition) |
-| Redshift DDL: `customer360/customer-metrics/src/ddls/create_customer_metric_daily_agg.sql` | Redshift representation, DISTKEY/SORTKEY |
-| Policies YAML: `customer360/customer-metrics/src/policies/customer_metric_daily_agg_dag.yaml` | SLA maxDurationMins, TIER_4, input/output lineage |
-| DQ constraints: `customer360/customer-metrics/src/data_quality/` | 19-column composite PK constraint (both Hive and lake layers) |
-| Lake table.yaml: `customer360/customer-metric-daily-agg-vw/table.yaml` | Data tier 4, SLA delivery cron, partition keys, consumer permissions, upstream lineage |
-| Lake table.ddl: `customer360/customer-metric-daily-agg-vw/table.ddl` | Column set (note: stale — missing `data_source_enum`) |
-| Confluence page 3779199819 | Business purpose, legacy table replacements, stewardship, NRU feature in progress |
-| Confluence page 4387965088 | Grain confirmation, data tier, coverage weight (15%) |
-| Alation | Skipped — `MOONUNIT_ALATION` not set |
 
-### Unresolved lineage items
-- **Alation URLs**: Not available (credentials missing). Both Redshift Serverless and Lake Alation table entries should be populated manually.
-- **`customer_acquisition_mst_month` exact format**: DDL comment says "as yyyy-MM" but source table comment says "truncated to month" — exact string format (YYYY-MM vs. YYYY-MM-01) not confirmed from data; flagged in C4 pitfalls.
-- **Three intermediate driver tables** (`customer_core_conformed.customer_ttm_payment_driver`, `customer_core_conformed.customer_active_subscription_detail_driver`, `customer_core_conformed.active_customer_stg`) feed into `customer_life_cycle` but their lake-level sources were not recursively traced — they do not surface as columns in `customer_metric_daily_agg` directly, so this does not affect C1 column lineage.
+| Source | Used For |
+|---|---|
+| PySpark `customer_metric_daily_agg.py` (main, HEAD `7523b6d5`) | Column schema, business logic, COALESCE defaults, write target, metric formulas, ETL steps |
+| DAG `customer_metric_daily_agg_dag.py` | Schedule (`30 7 * * *` MST), task flow, SLA reference, upstream dependency, EMR config, contacts |
+| Lake `table.yaml` | SLA delivery target (`cron(00 15 * * ? *)` UTC), data tier (4), permissions, SLO identifier |
+| Lake `table.ddl` | Column schema cross-check (noted discrepancies: missing `data_source_enum`, incomplete `@PrimaryKey`) |
+| DQ constraints JSON (local + lake) | Authoritative 19-column composite primary key |
+| Policy YAML | Max duration (120 min), TIER_4, team/environment contacts |
+| `RESOLVED_TARGET.json` | Schema/table identity confirmation |
+| Confluence (pages 3779199819, 4042131239, 4042131351, 4192469643) | Official metric definitions (Active Customer, New, Churn, Net Adds), deprecation notice, validation thresholds |
+| Alation (lake ID 7038346, Redshift ID 7038887) | Alation URLs, Alation description, steward, 6 saved queries |
+
+### Lineage resolution
+All intermediate tables fully resolved — zero UNRESOLVED entries.
+
+- `customer_core_conformed.customer_life_cycle` → `customer360.customer_life_cycle_vw` (lake)
+- `customer360.customer_life_cycle_vw` itself traced through 15+ lake tables across 7 schemas (`enterprise`, `analytic_feature`, `customer360`, `finance360`, `dp_enterprise`, `ecomm_mart`, `customers`, `finance_cln`)
+- All 32 target columns mapped to lake source `customer360.customer_life_cycle_vw` (or derived/hardcoded)
+
+### Notable discrepancies documented (not fabricated — all sourced from code)
+1. Lake DDL missing `data_source_enum` column
+2. Lake DDL `@PrimaryKey` covers 16 of 19 PK columns (DQ JSON is authoritative)
+3. Policy YAML input listing is stale (lists `customer_life_cycle_vw`; code reads conformed table)
+4. DAG docstring SLA = `N/A` (contradicted by lake `table.yaml` and policy YAML)
+5. Legacy column rename: `evaluation_mst_date` → `partition_eval_mst_date`
 
 **The agent's final response to the user was:**
 `TABLE_METADATA.md` has been created and `generate.md` has been updated. Here is a summary of what was produced:
 
 ---
 
-## TABLE_METADATA.md — Summary
+**`TABLE_METADATA.md` — `customer360.customer_metric_daily_agg_vw`**
 
-**Target table:** `customer360.customer_metric_daily_agg_vw`
+All 20 sections (A1–E3) across 5 pillars are populated:
 
-The document covers all 5 pillars and 20 sections (A1–E3):
+- **A1** — Identity table with Redshift table name, database, schema, both Alation URLs, grain, partition key, storage format, Data Tier 4, SLA, DAG ID, and upstream dependency.
+- **A2** — Business description of the daily customer lifecycle roll-up, its 18 dimensions, 5 lifecycle events, and replacement of `customer_mart.daily_active_customers` (from USER NOTES + code).
+- **A3** — Full ownership table: EDT team, contacts, MWAA environment, Alation steward.
+- **B1** — Key business value: DAC reporting, unified lifecycle view, 18-dim segmentation, legacy migration.
+- **B2** — 8 questions this table answers + all 6 Alation queries with SQL verbatim.
+- **B3** — Advanced analytics use cases (cohort transitions, churn modeling, product affinity, etc.).
+- **C1** — Complete 32-column schema table with types, descriptions, COALESCE defaults, and source table (`customer360.customer_life_cycle_vw` for all data columns; derived/hardcoded for computed/system columns).
+- **C2** — 19-column composite PK, Redshift DISTKEY/SORTKEY, known lake DDL discrepancy noted.
+- **C3–C7** — Features/limitations, pitfalls (partition filter, column renames, UK→GB normalization), always-on filters, metric definitions, glossary with official Confluence definitions and COALESCE defaults table.
+- **C8** — 4 focused, annotated example queries.
+- **D1–D4** — Source reference (upstream lake tables), pipeline/infrastructure details, SLA/schedule, ETL logic summary.
+- **E1–E3** — DQ constraints (isPrimaryKey, 19 columns), best practices, full related assets table.
 
-| Pillar | Key content |
-|---|---|
-| **A — Identity** | Table overview key-value table (grain, partition, format, data tier, SLA, DAG); business description replacing legacy `customer_mart` tables; ownership (EDT team, Slack channels, email) |
-| **B — Value** | Business value narrative; 10 natural-language use case questions; 5 advanced analytics patterns |
-| **C — Usage** | Full 32-column schema table with types, descriptions, source column renames, and derivation notes; 19-column composite PK; gap-fill and normalization pitfalls; always-filter guidance; metric definitions; glossary; 5 annotated example queries |
-| **D — Pipeline** | Source table (`customer360.customer_life_cycle_vw`); repo paths, DAG task flow diagram, EMR spec; SLA table; ETL logic summary (7-step aggregation) |
-| **E — Governance** | DQ constraints (19-col PK on both Hive and lake layers); 7 best-practice tips; Confluence and code references |
-
-**Sections requiring manual input: 1**
-- `A1` Alation URLs — `MOONUNIT_ALATION` credentials were not available; the Data Governance team should populate these after lookup.
+**Sections requiring manual input: 3** (individual steward name, PII classification, retention policy — all tagged `DG`).

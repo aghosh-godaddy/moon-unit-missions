@@ -5,6 +5,8 @@ evidence-backed metadata.
 
 ## Step 1: Read INPUT.md and gather.md
 - Read `INPUT.md` and the previous stage output `gather.md`.
+- If INPUT.md contains USER NOTES, factor them into your facts blocks where relevant
+  (they are expert-provided and take priority over Confluence/Alation text).
 
 ## Step 2: Identify the target table
 Determine the final output lake table populated by this PySpark job.
@@ -99,370 +101,394 @@ If the target cannot be resolved, still write the file with nulls and a clear ex
 
 ---
 
-# Analyze Stage Report — customer_metric_daily_agg
+## Analyze Stage — Research Summary
 
-**Generated:** 2026-05-28  
-**Analyst stage:** analyze  
-**Target identifier:** customer360 / customer-metric-daily-agg
+**Date analyzed:** 2026-05-28
+**Source script:** `customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py` (ref `main`, HEAD `7523b6d5`)
 
 ---
 
-## 1. Target Table Resolution
+## Target Table Resolution
 
-### Primary Write Target (from PySpark code)
-
+### Primary target (lake)
 | Field | Value | Evidence |
 |---|---|---|
-| Hive intermediate table | `customer_core_conformed.customer_metric_daily_agg` | `customer_metric_daily_agg.py` lines 29-31: `DATABASE_NAME="customer_core_conformed"`, `TABLE_NAME="customer_metric_daily_agg"` |
-| Write method | `insertInto("customer_core_conformed.customer_metric_daily_agg", overwrite=True)` | Line 438-440 |
-| S3 path | `s3://gd-ckpetlbatch-{env}-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg/` | Hive DDL `customer_metric_daily_agg.ddl` |
-| **Authoritative lake table** | `customer360.customer_metric_daily_agg_vw` | Lake registry: `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.yaml`; policies output; DAG `call_lake_api` task |
-| Lake path | `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/` | Lake registry |
-| Format | Parquet (zstd) | Hive DDL, Spark config |
-| Partition | `partition_eval_mst_date` (string) | Hive DDL, lake table.yaml |
+| Schema | `customer360` | `customer_life_cycle_dag.py`: `SuccessNotificationOperator(db_name="customer360", table_name="customer_metric_daily_agg_vw")` |
+| Table name | `customer_metric_daily_agg_vw` | Same; also lake DDL `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.ddl` |
+| Lake path | `dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/` | Lake repo directory confirmed |
+| S3 location | `s3://gd-ckpetlbatch-{env}-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg/` | `customer_metric_daily_agg.ddl` line 17 |
+| Physical write target | `customer_core_conformed.customer_metric_daily_agg` | `customer_metric_daily_agg.py` line 438: `insertInto(QUALIFIED_TABLE_NAME, overwrite=True)` |
+| Write mode | `insertInto(overwrite=True)` partitioned by `partition_eval_mst_date`, `repartition(1)` | PySpark line 438 |
+| Lake override in INPUT.md | None provided | INPUT.md: `Lake table override: (empty)` |
+| Confidence | **HIGH** | Lake DDL + SuccessNotificationOperator + Alation entry all consistent |
 
-**Two-layer naming pattern:** This repo follows a pattern where `customer_core_conformed.*` is the working/intermediate Hive layer (partitioned Parquet on a proprietary S3 bucket) and `customer360.*_vw` is the lake-registered canonical public name. Both reference the same underlying S3 data. The lake registry's `table_relative_path: "customer_metric_daily_agg"` confirms they share the same physical path.
-
-**No lake_table_override was provided.** The resolved lake table is `customer360.customer_metric_daily_agg_vw` with high confidence.
+### Additional outputs (same pipeline)
+| Output | Type | Notes |
+|---|---|---|
+| `customer360.customer_metric_daily_agg_vw` (Redshift) | Redshift table | Loaded via `s3_to_redshift` COPY + upsert in DAG |
+| `{database}.customer_metric_daily_agg_vw_stg` | Redshift staging | Temporary staging; not a durable output |
 
 ---
 
-## 2. Full Lineage Resolution Table
+## Full Lineage Resolution Table
 
-### Direct Source of the Target PySpark Job
-
-| Intermediate Table | Code Reference | Lake Table Resolution | Resolution Method |
-|---|---|---|---|
-| `customer_core_conformed.customer_life_cycle` | Read directly in `get_customer_metrics_daily_agg()` SQL (line 228) | `customer360.customer_life_cycle_vw` | Lake registry at `dlms-api/us-west-2/customer360/customer-life-cycle-vw/`; `table.yaml` `table_relative_path: "customer_life_cycle"` confirms same S3 data; DAG dependency sensor waits on `customer360/customer_life_cycle_vw/_SUCCESS` |
-
-### Upstream of `customer_core_conformed.customer_life_cycle`
-
-The script `customer360/customer-metrics/src/pyspark/customer_life_cycle.py` builds this table. Its source tables (per code `get_tables()` function) are:
-
-| Table Read by customer_life_cycle.py | Lake Table Status | Evidence |
+| Intermediate Table | Resolved To (Lake Table) | Resolution Method |
 |---|---|---|
-| `analytic_feature.shopper_acquisition` | Declared as upstream dep in `customer360.customer_life_cycle_vw` lake YAML | lake YAML lineage block |
-| `analytic_feature.customer_type_history` | Declared as upstream dep in `customer360.customer_life_cycle_vw` lake YAML | lake YAML lineage block |
-| `analytic_feature.customer_fraud` | Declared as upstream dep in `customer360.customer_life_cycle_vw` lake YAML | lake YAML lineage block |
-| `analytic_feature.shopper_merge` | Declared as upstream dep in `customer360.customer_life_cycle_vw` lake YAML | lake YAML lineage block |
-| `customer360.dim_customer_history_vw` | Lake table (customer360 schema, lake-registered) | lake YAML lineage block |
-| `customers.customer_id_mapping_snapshot` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `dp_enterprise.dim_reseller` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `ecomm_mart.bill_line_traffic_ext` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `ecomm_mart.dim_bill_line_purchase_attribution` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `ecomm_mart.entitlement_bill_type` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `enterprise.dim_bill_shopper_id_xref` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `enterprise.dim_entitlement_history` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `enterprise.dim_new_acquisition_shopper` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `enterprise.dim_subscription_history` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `enterprise.fact_bill_line` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `enterprise.fact_entitlement_bill` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `finance360.dim_bill_fraud_history_vw` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `finance360.dim_country_vw` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `finance360.dim_product_vw` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `finance_cln.manual_paid_subscription` | Declared as upstream dep in lake YAML | lake YAML lineage block |
-| `customer_core_conformed.customer_ttm_payment_driver` | Intermediate table (not in lake registry). Built by `customer360/customer-metrics/src/pyspark/` (confirmed via DAG dependency sensor on `customer_core_conformed.customer_ttm_payment_driver`). DAG dependency sensors confirm this table is in the same pipeline family. | UNRESOLVED to individual lake sources — not recursively traced in this stage |
-| `customer_core_conformed.customer_active_subscription_detail_driver` | Intermediate table (not in lake registry). Similar pattern to above. | UNRESOLVED to individual lake sources — not recursively traced in this stage |
-| `customer_core_conformed.active_customer_stg` | Intermediate table (not in lake registry). | UNRESOLVED to individual lake sources — not recursively traced in this stage |
+| `customer_core_conformed.customer_life_cycle` | `customer360.customer_life_cycle_vw` | Script `customer_life_cycle.py` writes to `customer_core_conformed.customer_life_cycle` (`insertInto`, line 1083); lake registers `customer360.customer_life_cycle_vw` via SuccessNotificationOperator; lake DDL at `dlms-api/us-west-2/customer360/customer-life-cycle-vw/` confirmed |
+| `customer_core_conformed.active_customer_stg` | Resolved via lake table stack — see row below | Script `active_customer_stg.py` writes to `customer_core_conformed.active_customer_stg` (`insertInto`, line 328) |
+| `active_customer_stg` → reads → `customer_core_conformed.customer_active_subscription_detail_driver` | `enterprise.dim_subscription_history`, `enterprise.dim_entitlement_history`, `enterprise.fact_bill_line`, `enterprise.fact_entitlement_bill`, `enterprise.dim_bill_shopper_id_xref`, `ecomm_mart.entitlement_bill_type`, `finance360.dim_product_vw`, `customer360.dim_customer_history_vw`, `finance_cln.manual_paid_subscription` | Script `customer_active_subscription_detail_driver.py`; all confirmed in lake repo |
+| `active_customer_stg` → reads → `customer_core_conformed.customer_ttm_payment_driver` | `enterprise.fact_bill_line`, `enterprise.dim_bill_shopper_id_xref`, `customer360.dim_customer_history_vw`, `customers.customer_id_mapping_snapshot` | Script `customer_ttm_payment_driver.py`; all confirmed in lake repo |
+| `active_customer_stg` → reads → `customer_core_conformed.subscription_grace_policy` | `enterprise.dim_subscription_history`, `enterprise.dim_entitlement_history`, `finance360.dim_product_vw`, `customer360.dim_customer_history_vw` | Script `subscription_grace_policy.py`; all confirmed in lake repo |
+| `analytic_feature.shopper_acquisition` | `analytic_feature.shopper_acquisition` (LAKE) | Lake path: `us-west-2/analytic-feature/shopper-acquisition/` confirmed |
+| `analytic_feature.customer_type_history` | `analytic_feature.customer_type_history` (LAKE) | Lake path: `us-west-2/analytic-feature/customer-type-history/` confirmed |
+| `analytic_feature.customer_fraud` | `analytic_feature.customer_fraud` (LAKE) | Lake path: `us-west-2/analytic-feature/customer-fraud/` confirmed |
+| `analytic_feature.shopper_merge` | `analytic_feature.shopper_merge` (LAKE) | Lake path: `us-west-2/analytic-feature/shopper-merge/` confirmed |
+| `customer360.dim_customer_history_vw` | `customer360.dim_customer_history_vw` (LAKE) | Lake path: `dlms-api/us-west-2/customer360/dim-customer-history-vw/` confirmed |
+| `finance360.dim_country_vw` | `finance360.dim_country_vw` (LAKE) | Lake path: `dlms-api/us-west-2/finance360/dim-country-vw/` confirmed |
+| `finance360.dim_bill_fraud_history_vw` | `finance360.dim_bill_fraud_history_vw` (LAKE) | Lake path: `dlms-api/us-west-2/finance360/dim-bill-fraud-history-vw/` confirmed |
+| `finance360.dim_product_vw` | `finance360.dim_product_vw` (LAKE) | Lake path: `dlms-api/us-west-2/finance360/dim-product-vw/` confirmed |
+| `dp_enterprise.dim_reseller` | `dp_enterprise.dim_reseller` (LAKE) | Lake path: `us-west-2/dp-enterprise/dim-reseller/` confirmed |
+| `enterprise.dim_new_acquisition_shopper` | `enterprise.dim_new_acquisition_shopper` (LAKE) | Lake path: `us-west-2/enterprise/dim-new-acquisition-shopper/` confirmed |
+| `enterprise.dim_subscription_history` | `enterprise.dim_subscription_history` (LAKE) | Lake path: `us-west-2/enterprise/dim-subscription-history/` confirmed |
+| `enterprise.dim_entitlement_history` | `enterprise.dim_entitlement_history` (LAKE) | Lake path: `us-west-2/enterprise/dim-entitlement-history/` confirmed |
+| `enterprise.fact_bill_line` | `enterprise.fact_bill_line` (LAKE) | Lake path: `us-west-2/enterprise/fact-bill-line/` confirmed |
+| `enterprise.fact_entitlement_bill` | `enterprise.fact_entitlement_bill` (LAKE) | Lake path: `us-west-2/enterprise/fact-entitlement-bill/` confirmed |
+| `enterprise.dim_bill_shopper_id_xref` | `enterprise.dim_bill_shopper_id_xref` (LAKE) | Lake path: `us-west-2/enterprise/dim-bill-shopper-id-xref/` confirmed |
+| `ecomm_mart.bill_line_traffic_ext` | `ecomm_mart.bill_line_traffic_ext` (LAKE) | Lake path: `us-west-2/ecomm-mart/bill-line-traffic-ext/` confirmed |
+| `ecomm_mart.dim_bill_line_purchase_attribution` | `ecomm_mart.dim_bill_line_purchase_attribution` (LAKE) | Lake path: `us-west-2/ecomm-mart/dim-bill-line-purchase-attribution/` confirmed |
+| `ecomm_mart.entitlement_bill_type` | `ecomm_mart.entitlement_bill_type` (LAKE) | Lake path: `us-west-2/ecomm-mart/entitlement-bill-type/` confirmed |
+| `customers.customer_id_mapping_snapshot` | `customers.customer_id_mapping_snapshot` (LAKE) | Lake path: `us-west-2/customers/customer-id-mapping-snapshot/` confirmed |
+| `finance_cln.manual_paid_subscription` | `finance_cln.manual_paid_subscription` (LAKE) | Lake path: `us-west-2/finance-cln/manual-paid-subscription/` confirmed |
 
-**Key conclusion:** Because `customer360.customer_life_cycle_vw` is the lake-registered canonical form of `customer_core_conformed.customer_life_cycle` (same S3 data, confirmed by `table_relative_path`), the lineage for `customer_metric_daily_agg` terminates at `customer360.customer_life_cycle_vw` as the authoritative lake source. The three intermediate driver tables feed into `customer_life_cycle` but their columns do NOT directly surface in `customer_metric_daily_agg` — they are consumed internally by `customer_life_cycle.py` to produce the columns that `customer_metric_daily_agg.py` reads.
+**No UNRESOLVED entries** — all intermediate tables were traced to confirmed lake tables.
 
 ---
 
-## 3. Column-Level Lineage Mapping
+## Column-Level Lineage Mapping
 
-**All columns trace through:** `customer_core_conformed.customer_life_cycle` → **`customer360.customer_life_cycle_vw`** (lake table, path `dlms-api/us-west-2/customer360/customer-life-cycle-vw/`)
+All target columns trace through `customer_core_conformed.customer_life_cycle` → lake table `customer360.customer_life_cycle_vw`.
 
-### Dimension Columns (GROUP BY keys)
-
-| Target Column | Source Expression in PySpark | Lake Source: customer360.customer_life_cycle_vw column |
-|---|---|---|
-| `customer_type_reason_desc` | `coalesce(customer_type_reason_desc, 'Not Classified')` | `customer_type_reason_desc` |
-| `customer_acquisition_mst_month` | `coalesce(customer_acquisition_mst_month, '')` | `customer_acquisition_mst_month` |
-| `customer_domestic_international_name` | `coalesce(customer_domestic_international_name, 'International')` | `customer_domestic_international_name` |
-| `customer_region_1_name` | `coalesce(customer_region_1_name, 'International - RoW')` | `customer_region_1_name` |
-| `customer_region_2_name` | `coalesce(customer_region_2_name, 'Rest of World (RoW)')` | `customer_region_2_name` |
-| `customer_region_3_name` | `coalesce(customer_region_3_name, 'NA')` | `customer_region_3_name` |
-| `customer_country_name` | `coalesce(customer_acquisition_country_name, 'Unknown')` | `customer_acquisition_country_name` (**column renamed**) |
-| `customer_country_code` | `coalesce(customer_acquisition_country_code, '--')` then `upper()` + "UK"→"GB" fix | `customer_acquisition_country_code` (**column renamed + normalized**) |
-| `customer_type_name` | `coalesce(customer_type_name, 'Not Classified')` | `customer_type_name` |
-| `acquisition_channel_name` | `coalesce(customer_acquisition_channel_name, 'Not GA Attributed')` | `customer_acquisition_channel_name` (**column renamed**) |
-| `customer_tenure_year_count` | `coalesce(customer_tenure_year_count, 0)` | `customer_tenure_year_count` |
-| `product_ownership_category_list` | `product_pnl_category_list` | `product_pnl_category_list` (**column renamed**) |
-| `product_ownership_line_list` | `product_pnl_line_list` | `product_pnl_line_list` (**column renamed**) |
-| `reseller_type_name` | `reseller_type_name` (pass-through) | `reseller_type_name` |
-| `fraud_flag` | `coalesce(customer_fraud_flag, false)` | `customer_fraud_flag` (**column renamed**) |
-| `point_of_purchase_name` | `coalesce(point_of_purchase_name, 'Unknown')` | `point_of_purchase_name` |
-| `customer_acquisition_bill_fraud_flag` | `coalesce(customer_acquisition_bill_fraud_flag, false)` | `customer_acquisition_bill_fraud_flag` |
-| `brand_name_list` | `brand_name_list` (pass-through) | `brand_name_list` |
-
-### Derived Measure Columns
-
-| Target Column | Source Expression | Lake Source Column(s) |
-|---|---|---|
-| `product_category_qty` | `coalesce(size(product_ownership_category_list), 0)` — array size of the GROUP BY key | `product_pnl_category_list` (array size derived) |
-| `ttm_gcr_usd_amt` | `SUM(ttm_gcr_usd_amt)` aggregated over group | `ttm_gcr_usd_amt` |
-| `ending_customer_qty` | `COUNT_IF(active_status_flag = true)` | `active_status_flag` |
-| `churn_customer_qty` | `COUNT_IF(customer_churn_mst_date IS NOT NULL)` | `customer_churn_mst_date` |
-| `merge_customer_qty` | `COUNT_IF(customer_merge_mst_date IS NOT NULL)` | `customer_merge_mst_date` |
-| `new_customer_qty` | `COUNT_IF(customer_acquisition_mst_date = partition_eval_mst_date)` | `customer_acquisition_mst_date`, `partition_eval_mst_date` |
-| `reactivate_customer_qty` | `COUNT_IF(customer_reactivate_mst_date IS NOT NULL)` | `customer_reactivate_mst_date` |
-| `beginning_customer_qty` | `CASE WHEN LAG(partition_eval_mst_date) = DATE_SUB(partition_eval_mst_date,1) THEN LAG(ending_customer_qty) ELSE 0 END` (window over dim partition) | `active_status_flag` (via ending_customer_qty, which is COUNT_IF of active_status_flag from prior day) |
-| `net_move_qty` | `ending_customer_qty - beginning_customer_qty - new_customer_qty + (churn_customer_qty - reactivate_customer_qty) + merge_customer_qty` | `active_status_flag`, `customer_churn_mst_date`, `customer_merge_mst_date`, `customer_acquisition_mst_date`, `customer_reactivate_mst_date` |
-| `net_add_qty` | `ending_customer_qty - beginning_customer_qty` | `active_status_flag` |
-| `net_churn_qty` | `churn_customer_qty - reactivate_customer_qty` | `customer_churn_mst_date`, `customer_reactivate_mst_date` |
-
-### Metadata / System Columns
-
-| Target Column | Source Expression | Lake Source |
-|---|---|---|
-| `data_source_enum` | Hardcoded literal `'customer360'` | No upstream source; constant injected by ETL |
-| `etl_build_mst_ts` | `from_utc_timestamp(current_timestamp(), 'MST')` | No upstream source; system timestamp at ETL execution |
-| `partition_eval_mst_date` | Pass-through from GROUP BY | `partition_eval_mst_date` (partition key of customer_life_cycle_vw) |
+| Target Column | Lake Source Table | Source Column | Transformation |
+|---|---|---|---|
+| `customer_type_reason_desc` | `customer360.customer_life_cycle_vw` | `customer_type_reason_desc` | `COALESCE(..., 'Not Classified')` |
+| `customer_acquisition_mst_month` | `customer360.customer_life_cycle_vw` | `customer_acquisition_mst_month` | `COALESCE(..., '')` |
+| `customer_domestic_international_name` | `customer360.customer_life_cycle_vw` | `customer_domestic_international_name` | `COALESCE(..., 'International')` |
+| `customer_region_1_name` | `customer360.customer_life_cycle_vw` | `customer_region_1_name` | `COALESCE(..., 'International - RoW')` |
+| `customer_region_2_name` | `customer360.customer_life_cycle_vw` | `customer_region_2_name` | `COALESCE(..., 'Rest of World (RoW)')` |
+| `customer_region_3_name` | `customer360.customer_life_cycle_vw` | `customer_region_3_name` | `COALESCE(..., 'NA')` |
+| `customer_country_name` | `customer360.customer_life_cycle_vw` | `customer_acquisition_country_name` | Column renamed; `COALESCE(..., 'Unknown')` |
+| `customer_country_code` | `customer360.customer_life_cycle_vw` | `customer_acquisition_country_code` | Column renamed; `COALESCE(..., '--')`; `UPPER()`; `'UK'→'GB'` |
+| `customer_type_name` | `customer360.customer_life_cycle_vw` | `customer_type_name` | `COALESCE(..., 'Not Classified')` |
+| `acquisition_channel_name` | `customer360.customer_life_cycle_vw` | `customer_acquisition_channel_name` | Column renamed; `COALESCE(..., 'Not GA Attributed')` |
+| `customer_tenure_year_count` | `customer360.customer_life_cycle_vw` | `customer_tenure_year_count` | `COALESCE(..., 0)`; `CAST AS int` |
+| `product_ownership_category_list` | `customer360.customer_life_cycle_vw` | `product_pnl_category_list` | Column renamed; `CAST AS string` (array serialized) |
+| `product_ownership_line_list` | `customer360.customer_life_cycle_vw` | `product_pnl_line_list` | Column renamed; `CAST AS string` (array serialized) |
+| `reseller_type_name` | `customer360.customer_life_cycle_vw` | `reseller_type_name` | Direct pass-through |
+| `fraud_flag` | `customer360.customer_life_cycle_vw` | `customer_fraud_flag` | Column renamed; `COALESCE(..., false)` |
+| `point_of_purchase_name` | `customer360.customer_life_cycle_vw` | `point_of_purchase_name` | `COALESCE(..., 'Unknown')` |
+| `customer_acquisition_bill_fraud_flag` | `customer360.customer_life_cycle_vw` | `customer_acquisition_bill_fraud_flag` | `COALESCE(..., false)` |
+| `brand_name_list` | `customer360.customer_life_cycle_vw` | `brand_name_list` | `CAST AS string` (array serialized) |
+| `ttm_gcr_usd_amt` | `customer360.customer_life_cycle_vw` | `ttm_gcr_usd_amt` | `SUM()` aggregated over 18 dim group-by |
+| `ending_customer_qty` | `customer360.customer_life_cycle_vw` | `active_status_flag` | `COUNT_IF(active_status_flag = true)` |
+| `churn_customer_qty` | `customer360.customer_life_cycle_vw` | `customer_churn_mst_date` | `COUNT_IF(customer_churn_mst_date IS NOT NULL)` |
+| `merge_customer_qty` | `customer360.customer_life_cycle_vw` | `customer_merge_mst_date` | `COUNT_IF(customer_merge_mst_date IS NOT NULL)` |
+| `new_customer_qty` | `customer360.customer_life_cycle_vw` | `customer_acquisition_mst_date`, `partition_eval_mst_date` | `COUNT_IF(customer_acquisition_mst_date = partition_eval_mst_date)` |
+| `reactivate_customer_qty` | `customer360.customer_life_cycle_vw` | `customer_reactivate_mst_date` | `COUNT_IF(customer_reactivate_mst_date IS NOT NULL)` |
+| `beginning_customer_qty` | `customer360.customer_life_cycle_vw` | `active_status_flag` (via `ending_customer_qty`) | Derived: `LAG(ending_customer_qty) OVER (PARTITION BY <18-dims> ORDER BY partition_eval_mst_date)` where prior day is contiguous; else `0` |
+| `net_move_qty` | derived from target columns | — | `ending_customer_qty - beginning_customer_qty - new_customer_qty + (churn_customer_qty - reactivate_customer_qty) + merge_customer_qty` |
+| `net_add_qty` | derived from target columns | — | `ending_customer_qty - beginning_customer_qty` |
+| `net_churn_qty` | derived from target columns | — | `churn_customer_qty - reactivate_customer_qty` |
+| `product_category_qty` | `customer360.customer_life_cycle_vw` | `product_pnl_category_list` | `size(product_pnl_category_list)` COALESCE 0 |
+| `data_source_enum` | Hardcoded | — | Literal `'customer360'` — not from any source table |
+| `etl_build_mst_ts` | System | — | `from_utc_timestamp(current_timestamp(), 'MST')` |
+| `partition_eval_mst_date` | `customer360.customer_life_cycle_vw` | `partition_eval_mst_date` | Direct pass-through; also partition key |
 
 ---
 
-## 4. Structured Facts Block (Sections A1..E3)
+## Facts Blocks (A1–E3)
 
-### A1 — Table Identity
-
-| Item | Value | Confidence | Evidence |
+### A1 — Table Name & Purpose
+| Item | Value | Source | Confidence |
 |---|---|---|---|
-| Schema | `customer360` | High | Lake registry path; DAG `call_lake_api` task; policies output |
-| Lake table name | `customer_metric_daily_agg_vw` | High | Lake registry `table.yaml`; policies YAML output |
-| Intermediate Hive table | `customer_core_conformed.customer_metric_daily_agg` | High | PySpark lines 29-31, 438-440 |
-| Lake table path in registry | `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/` | High | Direct file presence |
-| Redshift table | `customer360.customer_metric_daily_agg_vw` (prod) | High | `create_customer_metric_daily_agg.sql` DDL |
-| Data Tier | 4 | High | Lake `table.yaml` `data_tier: 4`; policies `severity: TIER_4` |
+| Table name (lake) | `customer360.customer_metric_daily_agg_vw` | Lake DDL path; SuccessNotificationOperator in DAG | HIGH |
+| Table name (physical) | `customer_core_conformed.customer_metric_daily_agg` | PySpark: `DATABASE_NAME`, `TABLE_NAME` constants | HIGH |
+| DAG name | `customer-metric-daily-agg` | `DAG_ID` in DAG file | HIGH |
+| Purpose | Daily roll-up of customer lifecycle metrics by 18 reporting dimensions | User notes (highest priority) + PySpark docstring + Confluence | HIGH |
+| What one row represents (grain) | One combination of 18 reporting dimensions for one `partition_eval_mst_date` | DQ `isPrimaryKey` on 19 cols (18 dims + date) | HIGH |
+| **MISSING** | Full business prose description beyond "daily aggregation" | No long-form description in code | — |
 
-### A2 — Business Description
-
-| Item | Value | Confidence | Evidence |
+### A2 — Business Domain & Classification
+| Item | Value | Source | Confidence |
 |---|---|---|---|
-| Official description | "Customer Metric Daily Aggregated on Reporting Dims for a given day" | High | Lake `table.yaml` description field |
-| Business purpose | Daily aggregated customer counts (active, new, churned, reactivated, merged) and revenue (TTM GCR) broken down by reporting dimensions | High | PySpark code logic + Confluence page 3779199819 |
-| Replaced legacy tables | `customer_mart.daily_active_customers`, `customer_mart.monthly_active_customers` | High | Confluence page 3779199819 |
-| Business category | "Business Metrics Layer" | High | Confluence page 3779199819 |
-| Coverage weight | 15% in Customer360 coverage matrix | High | Confluence page 4387965088 |
-| In-progress feature | NRU (New Registered User) and Lapsed user metrics | Medium | Confluence page 3779199819 (marked 🟡 in progress) |
+| Domain | Customer | DAG tags: `domain:customer` | HIGH |
+| Sub-domain | Active Customer | DAG tags: `sub-domain:active-customer` | HIGH |
+| Layer | Enterprise | DAG tags: `layer:enterprise` | HIGH |
+| Team | EDT (Emerald Data Team) | DAG tags: `team:EDT`; policy YAML | HIGH |
+| Pipeline group | `active-customer` | DAG tags: `pipeline-group:active-customer` | HIGH |
+| Deprecated replacement | Replaces `customer_mart.daily_active_customers` (and `customer_mart.monthly_active_customers`) | User notes + Confluence Customer360 page | HIGH |
 
-### A3 — Data Domain / Subject Area
-
-| Item | Value | Confidence | Evidence |
+### A3 — Consumers / Permissions
+| Consumer Group | Environment | Source | Confidence |
 |---|---|---|---|
-| Domain | Customer | High | DAG tag `domain:customer` |
-| Sub-domain | Active Customer | High | DAG tag `sub-domain:active-customer` |
-| Layer | Enterprise | High | DAG tag `layer:enterprise` |
-| Pipeline group | active-customer | High | DAG tag `pipeline-group:active-customer` |
+| `ckpetlbatch` | `dev_private` | `table.yaml` permissions | HIGH |
+| `data_lab` | `dev_private` | `table.yaml` permissions | HIGH |
+| `analytics` | `prod` | `table.yaml` permissions | HIGH |
+| `data_platform` | `stage`, `prod` | `table.yaml` permissions | HIGH |
+| `martech_data` | `stage`, `dev_private`, `prod` | `table.yaml` permissions | HIGH |
+| `revenue_and_relevance` | `stage`, `dev_private`, `prod`, `test` | `table.yaml` permissions | HIGH |
+| Redshift (bi.customer360) | prod | Redshift DDL + Alation ID 7038887 | HIGH |
+| **MISSING** | Named teams/squads consuming this table beyond permissions | Not in code or lake artifacts | — |
 
-### A4 — Ownership / Stewards
-
-| Item | Value | Confidence | Evidence |
+### A4 — Deprecated / Legacy Tables Replaced
+| Legacy Table | Status | Source | Confidence |
 |---|---|---|---|
-| DAG owner | `customer360` | High | DAG `owner` field |
-| Team | EDT (Enterprise Data Team) | High | DAG tag `team:EDT` |
-| On-call Slack | `#marketing-data-product-engineering` | High | DAG `on_call_slack` |
-| Stakeholder Slack | `#marketing-data-products-help` | High | DAG `stakeholders_slack` |
-| Alerts channel | `#edt-airflow-alerts` (prod) | High | DAG `slack_channel` |
-| On-call email | `dl-bi-enterprise-data@godaddy.com` | High | DAG `on_call_email` |
-| SNOW queue | `DEV-EDT-OnCall` | High | DAG `snow_queue` |
-| Business stewards | Finance, Marketing, DAP | Medium | Confluence page 3779199819 |
-| Technical stewards | FORGE team (Data Products PgM) | Medium | Confluence page 3779199819 |
+| `customer_mart.daily_active_customers` | Deprecated — replaced by this table | User notes (highest priority) + Confluence + Alation Query 138254 (cutover union) | HIGH |
+| `customer_mart.monthly_active_customers` | Deprecated — mentioned alongside daily | Confluence parent page | MEDIUM (Confluence only) |
+| Cutover date | ≥ 2026-04-01 uses C360 data; ≤ 2026-03-31 uses legacy | Alation Query 138254 migration union | MEDIUM (query, not code) |
 
-### B1 — Table Type
-
-| Item | Value | Confidence | Evidence |
+### A5 — Access / Data Classification
+| Item | Value | Source | Confidence |
 |---|---|---|---|
-| Table type | PARTITIONED external table (Hive/Glue Parquet) | High | Lake `table.yaml` `table_type: PARTITIONED`; DDL `STORED AS PARQUET` |
-| Redshift representation | Table (`customer360.customer_metric_daily_agg_vw`) | High | `create_customer_metric_daily_agg.sql` |
-| Mutability | Partition-overwrite (one full date partition rewritten per run) | High | PySpark `insertInto(..., overwrite=True)` + `repartition(1)` |
-
-### B2 — Grain
-
-| Item | Value | Confidence | Evidence |
-|---|---|---|---|
-| Grain | One row per `partition_eval_mst_date` × unique combination of all 18 dimension columns | High | PySpark GROUP BY 19 positions (date + 18 dims); Confluence page 4387965088: "One row per date × reporting dimension combo"; DQ PK constraint: 19 columns |
-| Approximate dimension count | ~18 grouping dimensions + date | High | PySpark GROUP BY clause + DQ PK column list |
-| Gap-fill rows | Zero-metric rows inserted for dimension combinations present the prior day but absent on the current day | High | PySpark `missing_next_day` LEFT ANTI JOIN logic |
-
-### B3 — Primary Key / Unique Key
-
-| Item | Value | Confidence | Evidence |
-|---|---|---|---|
-| Composite PK columns (DQ-enforced, 19 cols) | `partition_eval_mst_date` + 18 dimension columns (see full list) | High | DQ constraint file (USER_DEFINED, primary key check) |
-| DQ PK columns | `partition_eval_mst_date`, `customer_type_reason_desc`, `customer_acquisition_mst_month`, `customer_domestic_international_name`, `customer_region_1_name`, `customer_region_2_name`, `customer_region_3_name`, `customer_country_name`, `customer_country_code`, `customer_type_name`, `acquisition_channel_name`, `customer_tenure_year_count`, `product_ownership_category_list`, `product_ownership_line_list`, `reseller_type_name`, `fraud_flag`, `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag`, `brand_name_list` | High | DQ constraint file |
-| Lake DDL PK (@PrimaryKey, 16 cols) | Excludes `point_of_purchase_name` and `customer_acquisition_bill_fraud_flag` vs. DQ | Medium | Lake `table.ddl` @PrimaryKey annotations — may be stale (see Conflict #7 in gather.md) |
-| `data_source_enum` in PK? | No — not in DQ constraint PK for either table | High | DQ constraint files |
-
-### B4 — Partitioning
-
-| Item | Value | Confidence | Evidence |
-|---|---|---|---|
-| Partition column | `partition_eval_mst_date` | High | Lake `table.yaml`, Hive DDL, PySpark |
-| Partition type | String (YYYY-MM-DD format) | High | DDL `partition_eval_mst_date string`; PySpark date args format |
-| Files per partition | 1 (repartition(1) before write) | High | PySpark line 438 `repartition(1)` |
-| Overwrite scope | Full partition overwrite (not append) | High | `insertInto(..., overwrite=True)` |
-| Recommended always-filter | `partition_eval_mst_date` | High | Standard practice for partitioned tables; single-file partition design |
-| Post-write repair | `MSCK REPAIR TABLE` (best-effort, may fail silently) | High | PySpark lines 443-447 |
-
-### B5 — Storage Format / Location
-
-| Item | Value | Confidence | Evidence |
-|---|---|---|---|
-| Format | Parquet with zstd compression | High | DDL `STORED AS PARQUET`; Spark config `spark.sql.parquet.compression.codec=zstd` |
-| Intermediate S3 path | `s3://gd-ckpetlbatch-{env}-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg/` | High | Hive DDL LOCATION clause |
-| Lake storage | Same S3 path accessed via lake API / `customer360` schema | High | Lake `table.yaml` `table_relative_path: customer_metric_daily_agg` |
-
-### C1 — Column-Level Lineage
-
-See Section 3 above for full column-level mapping. Summary:
-- All 18 dimension columns: pass-through with coalesce defaults from `customer360.customer_life_cycle_vw`
-- All 5 base event counts: aggregated from boolean/date event flags in `customer360.customer_life_cycle_vw`
-- 3 derived quantities: computed from base counts (beginning via LAG, net_move/net_add/net_churn via arithmetic)
-- `data_source_enum`: constant literal `'customer360'` (no lake source)
-- `etl_build_mst_ts`: system timestamp (no lake source)
-- `partition_eval_mst_date`: pass-through partition key from `customer360.customer_life_cycle_vw`
-
-### D1 — Business Metrics / KPIs
-
-| Metric | Definition | Grain |
-|---|---|---|
-| `ending_customer_qty` | `COUNT_IF(active_status_flag = true)` — count of customers with active subscriptions as of eval date | Per dim combo per day |
-| `beginning_customer_qty` | `LAG(ending_customer_qty)` from prior calendar day (using window over dim partition; returns 0 if no prior day exists) | Per dim combo per day |
-| `new_customer_qty` | `COUNT_IF(customer_acquisition_mst_date = partition_eval_mst_date)` — customers whose first active date was today | Per dim combo per day |
-| `churn_customer_qty` | `COUNT_IF(customer_churn_mst_date IS NOT NULL)` — customers who churned on eval date | Per dim combo per day |
-| `reactivate_customer_qty` | `COUNT_IF(customer_reactivate_mst_date IS NOT NULL)` — customers who reactivated on eval date | Per dim combo per day |
-| `merge_customer_qty` | `COUNT_IF(customer_merge_mst_date IS NOT NULL)` — customers who were merged on eval date | Per dim combo per day |
-| `net_move_qty` | `ending - beginning - new + (churn - reactivate) + merge` — reconciliation check metric | Per dim combo per day |
-| `net_add_qty` | `ending - beginning` — net change in active customer base | Per dim combo per day |
-| `net_churn_qty` | `churn - reactivate` — net customer loss (positive = more churn than reactivation) | Per dim combo per day |
-| `ttm_gcr_usd_amt` | `SUM(ttm_gcr_usd_amt)` — total trailing-twelve-month gross cash received in USD | Per dim combo per day |
-| `product_category_qty` | `coalesce(size(product_ownership_category_list), 0)` — number of distinct product categories per dimension group | Per dim combo per day |
-
-### D2 — Always-On Filters (Non-Overridable Scope Restrictions)
-
-| Filter | Where Applied | Effect |
-|---|---|---|
-| `partition_eval_mst_date BETWEEN start_mst_date AND end_mst_date` | Final output SELECT (line 365) | Excludes the extra prior-day row fetched for LAG computation from the written output |
-| `partition_eval_mst_date BETWEEN start_mst_date_minus_1 AND end_mst_date` | Source read from `customer_life_cycle` | Reads one additional prior day to support LAG window; this row is NOT written to output |
-
-**Note:** The "UK"→"GB" country code normalization (`customer_country_code`) is a permanent data transformation, not a filter.
-
-### D3 — Derived / Computed Fields
-
-| Column | Formula | Inputs |
-|---|---|---|
-| `product_category_qty` | `coalesce(size(product_ownership_category_list), 0)` | `product_ownership_category_list` (array) |
-| `beginning_customer_qty` | Window LAG with gap detection: if prior day row exists, use prior day's ending count; else 0 | `ending_customer_qty` (prior row), `partition_eval_mst_date` |
-| `net_move_qty` | `ending - beginning - new + churn - reactivate + merge` | 5 event count columns + beginning_customer_qty |
-| `net_add_qty` | `ending - beginning` | `ending_customer_qty`, `beginning_customer_qty` |
-| `net_churn_qty` | `churn - reactivate` | `churn_customer_qty`, `reactivate_customer_qty` |
-| `customer_country_code` | `UPPER(code)` + replace "UK" → "GB" | `customer_acquisition_country_code` from source |
-| `data_source_enum` | Hardcoded literal `'customer360'` | None (constant) |
-| `etl_build_mst_ts` | `from_utc_timestamp(current_timestamp(), 'MST')` | None (system clock) |
-
-**Gap-fill logic (important for consumers):** Before the LAG window is applied, dimension combos that existed the prior day but are absent today are inserted as zero-metric rows. This ensures the LAG window function has a prior-day anchor for every active dimension combination, preventing gaps in `beginning_customer_qty`. These gap-fill rows have ending_customer_qty=0, which is valid — it means the customer group had zero active members that day.
-
-### E1 — Schedule / SLA
-
-| Item | Value | Confidence | Evidence |
-|---|---|---|---|
-| DAG schedule | `30 7 * * *` → 07:30 AM MST daily | High | DAG `schedule_interval` |
-| Schedule (dev-private) | `None` (disabled; manual trigger only) | High | DAG `is_dev_private` check |
-| SLA delivery commitment | By 08:00 AM MST daily (`cron(00 15 * * ? *)` UTC) | High | Lake `table.yaml` `sla.deliveryCadenceUTC` |
-| Max job duration (policy) | 120 minutes | High | Policies YAML `maxDurationMins: 120` |
-| SLA severity | TIER_4 | High | Policies YAML; lake `data_tier: 4` |
-| EMR cluster | `emr-7.10.0`, `m6g.16xlarge × 15` core nodes + `m6g.xlarge` master | High | DAG EMR config |
-| Architecture | ARM (Graviton, m6g family) | High | DAG EMR config |
-| Spark memory (fallback) | executor.memory=16G, executor.cores=4, driver.memory=4G, driver.cores=2 | High | DAG spark_conf_str default |
-| Max executors (fallback) | dynamicAllocation.maxExecutors=10 | High | DAG spark_conf_str default |
-| Backfill DAG | `customer-metric-daily-agg-backfill` (manual trigger; uses separate `customer_metric_daily_agg_backfill.py`; legacy_cut_off default: 2026-04-01) | High | Backfill DAG file |
-| legacyLookBackEnabled | true | High | Lake `table.yaml` |
-
-### E2 — Dependencies
-
-| Dependency | Type | Wait Mechanism | Evidence |
-|---|---|---|---|
-| `customer360.customer_life_cycle_vw` | Upstream table | S3KeySensor on `s3://.../customer360/customer_life_cycle_vw/{date}/_SUCCESS` (poke 30s, timeout 12h) | DAG `dependencies` task |
-| DAG execution order | After `create_redshift_tables_done` → `create_emr` | Hard DAG task dependency | DAG task flow |
-| Post-EMR: Lake API notification (prod only) | Output registration | `call_lake_api` SuccessNotificationOperator → `customer360.customer_metric_daily_agg_vw` | DAG `conditional_call_lake_api` task |
-| Post-EMR: Redshift load | Redshift staging copy | S3→Redshift copy to `customer_metric_daily_agg_stg` then delete+insert to final | DAG Redshift tasks |
-| Post-write DQ (local) | Data quality check | `DataQualityOperator` on `customer_core_conformed.customer_metric_daily_agg` | DAG `customer_metric_daily_agg_local_dq` task |
-| Post-lake DQ (prod only) | Data quality check | `DataQualityOperator` on `customer360.customer_metric_daily_agg_vw` | DAG `customer_metric_daily_agg_lake_dq` task |
-
-### E3 — Data Quality Constraints
-
-| Constraint | Type | Columns | Applied To |
-|---|---|---|---|
-| Primary key uniqueness | USER_DEFINED | `partition_eval_mst_date`, `customer_type_reason_desc`, `customer_acquisition_mst_month`, `customer_domestic_international_name`, `customer_region_1_name`, `customer_region_2_name`, `customer_region_3_name`, `customer_country_name`, `customer_country_code`, `customer_type_name`, `acquisition_channel_name`, `customer_tenure_year_count`, `product_ownership_category_list`, `product_ownership_line_list`, `reseller_type_name`, `fraud_flag`, `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag`, `brand_name_list` | Both `customer_core_conformed.customer_metric_daily_agg` and `customer360.customer_metric_daily_agg_vw` (identical constraint on both) |
+| Data Tier | 4 | `table.yaml`: `data_tier: 4`; Alation field | HIGH |
+| Alation Steward | Franchise: Customer (group ID 47) | Alation API response | HIGH |
+| Pipeline owner (email) | `emerald-data-team-org@godaddy.com` | `environment.prod.yaml`: `contact_email` | HIGH |
+| **MISSING** | PII classification, data sensitivity level | Not in code or lake artifacts | — |
+| **MISSING** | Named data steward (individual) | Alation shows group, not individual | — |
 
 ---
 
-## 5. Do Not Claim List
+### B1 — Physical Location & Storage
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| S3 bucket | `s3://gd-ckpetlbatch-{AWS_ENV}-customer-core-conformed` | DDL file; DAG S3ToRedshift operator | HIGH |
+| S3 prefix | `customer_core_conformed/customer_metric_daily_agg/` | DDL; DAG | HIGH |
+| Partition layout | `/partition_eval_mst_date=YYYY-MM-DD/` | Standard Hive partition layout; DAG S3ToRedshift path template | HIGH |
+| Storage format | Parquet | `table.yaml`: `storage_format: Parquet`; DDL: `STORED AS PARQUET` | HIGH |
+| Compression | ZSTD | PySpark Spark config: `spark.sql.parquet.compression.codec=zstd` | HIGH |
+| Lake registry path | `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/` | Lake repo confirmed | HIGH |
+| Redshift schema | `bi.customer360` (prod) | Redshift DDL; DAG variables | HIGH |
+| **MISSING** | Retention policy | Not in code or lake artifacts | — |
 
-The following items are tempting to state but are NOT proven by evidence:
+### B2 — Alation
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| Lake table Alation URL | https://godaddy.alationcloud.com/table/7038346/ | Alation API (ID 7038346, key `81.AwsDataCatalog.customer360.customer_metric_daily_agg_vw`) | HIGH |
+| Redshift Prod Alation URL | https://godaddy.alationcloud.com/table/7038887/ | Alation API (ID 7038887, key `63.bi.customer360.customer_metric_daily_agg_vw`) | HIGH |
+| Alation description | "A daily aggregated metrics table providing summarized customer performance indicators — Daily aggregation of customer metrics" | Alation API response | HIGH |
+| Saved queries referencing this table | 6 (IDs: 138586, 136952, 138254, 138184, 128804, 127875) — all unscheduled ad-hoc | Alation query API | HIGH |
+| Most notable saved query | Query 138254: migration union (legacy ≤ 2026-03-31 + c360 ≥ 2026-04-01) | Alation query content | HIGH |
 
-1. **"The lake table is `customer_core_conformed.customer_metric_daily_agg`"** — This is the intermediate Hive table. The authoritative lake-registered table is `customer360.customer_metric_daily_agg_vw`.
+### B3 — DAG / Scheduling
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| DAG ID | `customer-metric-daily-agg` | DAG file `DAG_ID` constant | HIGH |
+| Cron schedule | `30 7 * * *` (7:30 AM MST daily; disabled in `dev-private`) | DAG file line 201 | HIGH |
+| Timezone | `America/Phoenix` (MST, no DST) | DAG `pendulum.timezone` | HIGH |
+| Start date | `2026-01-01` | DAG `start_date` | HIGH |
+| Catchup | `False` | DAG `catchup=False` | HIGH |
+| Max active runs | 15 | DAG `max_active_runs=15` | HIGH |
+| Retries | 1, delay 3 min | DAG `default_args` | HIGH |
+| EMR release | `emr-7.10.0` | DAG `release_label` | HIGH |
+| EMR cluster size | 15 core nodes, `m6g.16xlarge` | DAG `CreateEMRClusterOperator` params | HIGH |
+| Upstream dependency | Waits for `customer360.customer_life_cycle_vw` S3 success file | DAG `S3KeySensor` for `customer360.customer_life_cycle_vw` | HIGH |
+| MWAA environment | `dof-customers` (AWS account `688051721285`) | `environment.prod.yaml` | HIGH |
 
-2. **"The job reads from `customer360.customer_life_cycle_vw`"** — The active PySpark SQL reads `customer_core_conformed.customer_life_cycle`; the `customer360.customer_life_cycle_vw` reference is commented out (line 227). The DAG dependency sensor gates on the view's success file, but the actual SQL query reads the intermediate table.
-
-3. **"`data_source_enum` values are `c360` or `legacy_dac`"** — The DDL comment says this, but the code always writes the literal `'customer360'`. The comment is stale.
-
-4. **"The primary key has 16 columns"** — The lake DDL `@PrimaryKey` annotations mark 16 columns, but the DQ constraint enforces 19 columns including `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag`, and the partition key. The DQ file is more recent and should be treated as authoritative for PK enforcement.
-
-5. **"The lake DDL schema is complete"** — The lake `table.ddl` is missing `data_source_enum` compared to the Hive DDL and PySpark `conform_datatype()`. The lake DDL is stale.
-
-6. **"SLA is N/A"** — The DAG `doc_md` says "SLA: N/A" and "Data Tier: N/A" as unfilled placeholders. The policy YAML and lake YAML clearly define SLA (TIER_4, 120 min max, delivery by 08:00 AM MST).
-
-7. **"customer_acquisition_mst_month format is YYYY-MM"** — The lake DDL comment says "as yyyy-MM" but the source (`customer_life_cycle_vw`) comment says "truncated to month". The exact format should be verified against actual data.
-
-8. **"There are no other source tables"** — The only ACTIVE SQL reads from `customer_core_conformed.customer_life_cycle`, but the commented-out line shows `customer360.customer_life_cycle_vw` was intended as an alternative source. The policies YAML lists both as inputs.
+### B4 — SLA
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| SLA cadence (lake) | `cron(00 15 * * ? *)` UTC = 08:00 AM MST every day | `table.yaml`: `deliveryCadenceUTC` | HIGH |
+| SLO identifier | `customer360.customer_metric_daily_agg_vw` | `table.yaml`: `sloIdentifier` | HIGH |
+| Max pipeline duration | 120 minutes | Policy YAML: `maxDurationMins: 120` | HIGH |
+| Data Tier | 4 | `table.yaml`: `data_tier: 4` | HIGH |
+| DAG docstring SLA | `N/A` | DAG docstring | — (STALE — contradicted by lake table.yaml) |
+| `legacyLookBackEnabled` | `true` | `table.yaml` | HIGH |
 
 ---
 
-## 6. Lineage Summary Diagram
+### C1 — Column Reference (full lineage)
+*See "Column-Level Lineage Mapping" section above for complete mapping.*
 
-```
-customer360.customer_life_cycle_vw (lake, 34 cols)
-  ↓ (physical S3 equivalent via customer_core_conformed layer)
-customer_core_conformed.customer_life_cycle (intermediate Hive, 45 cols)
-  ↓ (read by customer_metric_daily_agg.py)
-  → GROUP BY 18 dims + SUM/COUNT_IF measures
-  → Gap-fill (LEFT ANTI JOIN to project prior-day combos with zero metrics)
-  → LAG window → beginning_customer_qty
-  → Derived: net_move_qty, net_add_qty, net_churn_qty
-  → UK→GB normalization on customer_country_code
-  → Partition overwrite
-customer_core_conformed.customer_metric_daily_agg (intermediate Hive, 33 cols)
-  ↓ (lake API registration via call_lake_api SuccessNotificationOperator)
-customer360.customer_metric_daily_agg_vw (LAKE TABLE — 30 cols in DDL, 31 with data_source_enum)
-```
+Key renames (source → target):
+- `customer_acquisition_country_name` → `customer_country_name`
+- `customer_acquisition_country_code` → `customer_country_code`
+- `customer_acquisition_channel_name` → `acquisition_channel_name`
+- `product_pnl_category_list` → `product_ownership_category_list`
+- `product_pnl_line_list` → `product_ownership_line_list`
+- `customer_fraud_flag` → `fraud_flag`
+
+### C2 — Primary / Unique Key
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| Composite primary key (19 columns) | `partition_eval_mst_date` + 18 dimension columns | DQ constraint: `isPrimaryKey` on 19 cols (`customer_metric_daily_agg.json` and `customer_metric_daily_agg_vw.json`) | HIGH |
+| 18 dimension columns | `customer_type_reason_desc`, `customer_acquisition_mst_month`, `customer_domestic_international_name`, `customer_region_1_name`, `customer_region_2_name`, `customer_region_3_name`, `customer_country_name`, `customer_country_code`, `customer_type_name`, `acquisition_channel_name`, `customer_tenure_year_count`, `product_ownership_category_list`, `product_ownership_line_list`, `reseller_type_name`, `fraud_flag`, `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag`, `brand_name_list` | DQ constraint JSON | HIGH |
+| No surrogate key | Table has no auto-generated surrogate key | PySpark schema, DDL | HIGH |
+| Lake DDL `@PrimaryKey` columns | Only 16 columns annotated (missing `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag`; `data_source_enum` not in lake DDL at all) | Lake `table.ddl` | HIGH (discrepancy noted) |
+
+### C3 — Partitioning & Filtering
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| Partition key | `partition_eval_mst_date` (string, format `YYYY-MM-DD`) | DDL `PARTITIONED BY`; `table.yaml`; DQ | HIGH |
+| **Always filter on** | `partition_eval_mst_date` | User notes (highest priority) + lake table.yaml | HIGH |
+| Write mode | Overwrites the partition range `start_mst_date` to `end_mst_date` | `insertInto(overwrite=True)` | HIGH |
+| Source query range | Reads `start_mst_date - 1 day` through `end_mst_date` from source (extra day for LAG) | PySpark `start_mst_date_minus_1` variable | HIGH |
+| Redshift DISTKEY / SORTKEY | `partition_eval_mst_date` | Redshift DDL | HIGH |
+| File count per partition | 1 file (`repartition(1)`) | PySpark line 438 | HIGH |
+
+### C4 — Business Metrics Defined in Table
+| Metric | Definition | Grain | Source | Confidence |
+|---|---|---|---|---|
+| `ending_customer_qty` | Count of customers with `active_status_flag = true` at evaluation date | Per dim combination per day | PySpark SQL `COUNT_IF(active_status_flag = true)` | HIGH |
+| `new_customer_qty` | Count of customers whose first acquisition was on the evaluation date | Per dim combination per day | PySpark SQL `COUNT_IF(customer_acquisition_mst_date = partition_eval_mst_date)` | HIGH |
+| `churn_customer_qty` | Count of customers who churned on the evaluation date | Per dim combination per day | PySpark SQL `COUNT_IF(customer_churn_mst_date IS NOT NULL)` | HIGH |
+| `reactivate_customer_qty` | Count of customers reactivated on evaluation date | Per dim combination per day | PySpark SQL `COUNT_IF(customer_reactivate_mst_date IS NOT NULL)` | HIGH |
+| `merge_customer_qty` | Count of customers merged on evaluation date | Per dim combination per day | PySpark SQL `COUNT_IF(customer_merge_mst_date IS NOT NULL)` | HIGH |
+| `beginning_customer_qty` | Prior day's `ending_customer_qty` for same dim combination; 0 if prior day missing | Per dim combination per day | PySpark LAG window function | HIGH |
+| `net_move_qty` | `ending - beginning - new + (churn - reactivate) + merge` | Per dim combination per day | PySpark final SQL | HIGH |
+| `net_add_qty` | `ending - beginning` | Per dim combination per day | PySpark final SQL | HIGH |
+| `net_churn_qty` | `churn - reactivate` | Per dim combination per day | PySpark final SQL | HIGH |
+| `ttm_gcr_usd_amt` | SUM of gross cash received (USD) in trailing twelve months per customer, aggregated over dim combination | Per dim combination per day | PySpark `SUM(ttm_gcr_usd_amt)` | HIGH |
+| `product_category_qty` | Count of distinct product PnL categories owned (array size) | Per dim combination per day | PySpark `size(product_ownership_category_list)` | HIGH |
+| **Active Customer** (business def) | Individual/entity with paid transactions in TTM OR active paid subscriptions at end of period (SEC 10-K definition) | Per customer | Confluence C360 Customer Reporting Metrics page | HIGH |
+| **New Customer** (business def) | First paid or Domain COA order; Third Party App Store excluded | Per customer | Confluence | HIGH |
+| **Churned Customer** (business def) | No active paid subscription AND no paid transactions in TTM | Per customer | Confluence | HIGH |
+| **MISSING** | ARPU/ABPU — not in this table | Explicitly noted as not persisted; derive from MAC/DAC | Confluence | HIGH |
+
+### C5 — Grain Statement
+One row = one unique combination of `partition_eval_mst_date` (evaluation day, MST) × 18 customer reporting dimensions, representing the aggregate customer metrics for all customers matching that dimension combination on that day.
+
+Source: DQ `isPrimaryKey` constraint on 19 columns; PySpark GROUP BY on 19 columns.
+
+### C6 — Always-On Filters / Scope Restrictions
+| Filter | Effect | Source | Confidence |
+|---|---|---|---|
+| `partition_eval_mst_date BETWEEN start_mst_date AND end_mst_date` | Final output filtered to requested range; the extra day (`start_mst_date - 1`) is read from source but NOT written to output | PySpark final SQL WHERE clause | HIGH |
+| No global tenant/brand filter | All brands/countries included (no hardcoded WHERE on customer_type or region) | PySpark code review | HIGH |
+| Third Party App Store excluded from New | Business rule in upstream `dim_new_acquisition_shopper` / acquisition logic | Confluence | MEDIUM (applies upstream) |
+| Missing-dim forward-fill | Dimension combos from day T are forward-filled to day T+1 with zero metrics (candidates_next_day pattern) | PySpark `missing_next_day` CTE | HIGH |
+
+### C7 — COALESCE / Default Value Substitutions
+| Column | NULL becomes | Source | Confidence |
+|---|---|---|---|
+| `customer_type_reason_desc` | `'Not Classified'` | PySpark SQL | HIGH |
+| `customer_acquisition_mst_month` | `''` (empty string) | PySpark SQL | HIGH |
+| `customer_domestic_international_name` | `'International'` | PySpark SQL | HIGH |
+| `customer_region_1_name` | `'International - RoW'` | PySpark SQL | HIGH |
+| `customer_region_2_name` | `'Rest of World (RoW)'` | PySpark SQL | HIGH |
+| `customer_region_3_name` | `'NA'` | PySpark SQL | HIGH |
+| `customer_country_name` (from `customer_acquisition_country_name`) | `'Unknown'` | PySpark SQL | HIGH |
+| `customer_country_code` (from `customer_acquisition_country_code`) | `'--'` | PySpark SQL | HIGH |
+| `customer_type_name` | `'Not Classified'` | PySpark SQL | HIGH |
+| `acquisition_channel_name` (from `customer_acquisition_channel_name`) | `'Not GA Attributed'` | PySpark SQL | HIGH |
+| `customer_tenure_year_count` | `0` | PySpark SQL | HIGH |
+| `fraud_flag` (from `customer_fraud_flag`) | `false` | PySpark SQL | HIGH |
+| `customer_acquisition_bill_fraud_flag` | `false` | PySpark SQL | HIGH |
+| `point_of_purchase_name` | `'Unknown'` | PySpark SQL | HIGH |
+| `beginning_customer_qty` | `0` (if prior day not contiguous) | PySpark LAG CASE WHEN | HIGH |
+| `product_category_qty` | `0` (if array NULL) | PySpark `COALESCE(size(...), 0)` | HIGH |
+
+---
+
+### D1 — Data Quality
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| DQ constraint type | `isPrimaryKey` (USER_DEFINED) | `data_quality/constraints/customer_metric_daily_agg.json` | HIGH |
+| DQ columns (19) | `partition_eval_mst_date` + 18 dimension columns | DQ constraint JSON (both `.json` files) | HIGH |
+| DQ applied to | Both `customer_core_conformed.customer_metric_daily_agg` (local) and `customer360.customer_metric_daily_agg_vw` (lake) | Two separate DQ constraint files | HIGH |
+| DAG DQ task (local) | `dq_check_customer_metric_daily_agg_local` | DAG task flow | HIGH |
+| DAG DQ task (lake) | `dq_check_customer_metric_daily_agg_lake` (prod only, after call_lake_api) | DAG task flow | HIGH |
+| Validation: beginning continuity | Current day beginning must equal prior day ending | Confluence data validation test cases page | MEDIUM (Confluence doc, not enforced in DQ JSON) |
+| Validation: net_move_qty sum | Should sum to 0 over a date range | Confluence data validation test cases page | MEDIUM |
+| Variance threshold vs legacy | beginning/ending < 0.002%; new/reactivate/merge/churn ≤ 1% | Confluence data validation test cases page | MEDIUM |
+
+### D2 — Known Discrepancies / Issues
+| # | Issue | Details |
+|---|---|---|
+| 1 | Lake DDL missing `data_source_enum` | `table.ddl` (lake) omits `data_source_enum`; PySpark, Hive DDL, Redshift DDL all include it (hardcoded `'customer360'`) |
+| 2 | Lake DDL `@PrimaryKey` incomplete | 16 columns annotated vs 19-column key in DQ constraint; missing `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag` |
+| 3 | Policy YAML stale input listing | `customer_metric_daily_agg_dag.yaml` lists `customer360.customer_life_cycle_vw` as active input; PySpark reads `customer_core_conformed.customer_life_cycle` (vw reference is commented out) |
+| 4 | DAG docstring SLA = N/A | Contradicted by lake `table.yaml` SLA (`cron(00 15 * * ? *)` = 08:00 AM MST) and policy YAML (120 min max, TIER_4) |
+| 5 | Alation column name `evaluation_mst_date` | Legacy column name used in some Alation queries; lake table uses `partition_eval_mst_date` |
+| 6 | Migration cutover in Alation queries | Queries use union of legacy (≤ 2026-03-31) and C360 (≥ 2026-04-01); not reflected in this table's DDL or code |
+
+---
+
+### E1 — Ownership
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| DAG owner | `customer360` | DAG `default_args` | HIGH |
+| Team | EDT (Emerald Data Team) | DAG tags; policy YAML | HIGH |
+| Data Lake Owner (Alation) | `ckpetlbatch` | Alation API response | HIGH |
+| Owner email | `emerald-data-team-org@godaddy.com` | `environment.prod.yaml` | HIGH |
+| OnCall SNOW | `DEV-EDT-OnCall` | DAG docstring; policy YAML | HIGH |
+| MWAA environment | `dof-customers` | `environment.prod.yaml` | HIGH |
+| AWS accounts | MWAA: `688051721285`; EMR Serverless: `664289052486`; S3: `688051721285`; Datalake: `028140660016`; Redshift: `561403605607` | `environment.prod.yaml` | HIGH |
+
+### E2 — Alerting / Contacts
+| Item | Value | Source | Confidence |
+|---|---|---|---|
+| Slack (prod failures) | `#edt-airflow-alerts` | DAG | HIGH |
+| Slack (non-prod) | `#edt-airflow-alerts-low-priority` | DAG | HIGH |
+| Slack (dev) | `#edt` (private) | DAG docstring | HIGH |
+| OnCall Slack | `#marketing-data-product-engineering` | DAG docstring | HIGH |
+| OnCall Email | `dl-bi-enterprise-data@godaddy.com` | DAG docstring | HIGH |
+| Stakeholders Slack | `#marketing-data-products-help` | DAG docstring | HIGH |
+| OnCall SNOW | `DEV-EDT-OnCall` | DAG docstring; policy YAML | HIGH |
+
+### E3 — Related Assets
+| Asset | Location | Notes |
+|---|---|---|
+| PySpark script (target) | `customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py` | Authoritative ETL |
+| PySpark script (upstream lifecycle) | `customer360/customer-metrics/src/pyspark/customer_life_cycle.py` | Builds `customer_core_conformed.customer_life_cycle` |
+| DAG | `customer360/customer-metrics/src/dag/customer_metric_daily_agg_dag.py` | Authoritative schedule |
+| Hive DDL | `customer360/customer-metrics/src/ddls/customer_metric_daily_agg.ddl` | Consistent with PySpark |
+| Redshift DDL | `customer360/customer-metrics/src/ddls/create_customer_metric_daily_agg.sql` | Consistent with PySpark |
+| DQ constraint (local) | `customer360/customer-metrics/src/data_quality/constraints/customer_metric_daily_agg.json` | 19-column PK |
+| DQ constraint (lake) | `customer360/customer-metrics/src/data_quality/constraints/customer_metric_daily_agg_vw.json` | 19-column PK |
+| Policy YAML | `customer360/customer-metrics/src/policies/customer_metric_daily_agg_dag.yaml` | STALE: lists vw as input; code reads conformed |
+| Lake registry YAML | `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.yaml` | SLA, permissions, lineage |
+| Lake registry DDL | `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.ddl` | DISCREPANCY: missing `data_source_enum`, incomplete `@PrimaryKey` |
+| Confluence (parent) | https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/3779199819/Customer360 | Business Metrics Layer overview |
+| Confluence (metrics def) | https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/4042131351 | Official metric definitions |
+| Alation (lake) | https://godaddy.alationcloud.com/table/7038346/ | Lake table ID 7038346 |
+| Alation (Redshift) | https://godaddy.alationcloud.com/table/7038887/ | Redshift prod table ID 7038887 |
+| Upstream lake table | `customer360.customer_life_cycle_vw` | `dlms-api/us-west-2/customer360/customer-life-cycle-vw/` |
+
+---
+
+## Do Not Claim List
+
+The following items are tempting but **not proven** from authoritative evidence:
+
+1. **"The table has historical data from before 2026"** — PySpark start_date is `2026-01-01` in the DAG; no evidence of pre-2026 data in this C360 table (legacy data pre-2026 is in `customer_mart.daily_active_customers`).
+2. **"ARPU or churn rate metrics are in this table"** — Confluence explicitly states ARPU/ABPU and rate metrics (Churn Rate, Retention Rate) are NOT persisted in this table.
+3. **"The table is refreshed intraday"** — Schedule is once-daily at 7:30 AM MST; no intraday runs confirmed.
+4. **"`customer360.customer_life_cycle_vw` is a direct source in the PySpark"** — The reference to this table in the SQL is commented out (`--customer360.customer_life_cycle_vw`); the active source is `customer_core_conformed.customer_life_cycle`.
+5. **"The policy YAML accurately reflects current inputs"** — Policy YAML lists `customer360.customer_life_cycle_vw` as an active input, but code does not read it directly; policy YAML is stale.
+6. **"The lake DDL is the complete schema"** — Lake DDL is missing `data_source_enum` (present in PySpark, Hive DDL, Redshift DDL); lake DDL `@PrimaryKey` annotations cover only 16 of 19 PK columns.
+7. **"Third Party App Store customers are included in new_customer_qty"** — Confluence states they are excluded; this exclusion is enforced upstream in acquisition logic, not visibly in this PySpark.
+8. **"The Alation description is authoritative"** — Description is brief and generic; PySpark + DQ + Confluence provide the authoritative definitions.
+9. **"Data tier SLA means data is available exactly at 08:00 AM MST"** — The SLA is a target delivery time; actual latency depends on upstream `customer_life_cycle_vw` completion + EMR run time (max 120 min per policy).
+10. **"The cutover from legacy is permanent at 2026-04-01"** — This date appears in Alation ad-hoc queries only; it is not hardcoded in the PySpark or DAG, and may change.
 
 
 **The agent's final response to the user was:**
-Here is a summary of the research and work completed in this analysis stage:
+The analysis is complete. Here is a summary of what was done:
 
----
+## Analysis Stage — Summary
 
-## Analysis Stage Summary
+**Target table resolved (HIGH confidence):** `customer360.customer_metric_daily_agg_vw`
+- Lake path: `dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/`
+- Physical write: `customer_core_conformed.customer_metric_daily_agg` → S3 Parquet, partitioned by `partition_eval_mst_date`
 
-### Target Table Resolution
+**Lineage resolution — all intermediate tables traced:**
 
-The authoritative lake table is **`customer360.customer_metric_daily_agg_vw`** (high confidence), registered at `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/`. The PySpark job writes to the intermediate Hive layer `customer_core_conformed.customer_metric_daily_agg`, which the lake API then registers as the public `customer360.*_vw` name using the same S3 path.
+The PySpark reads only one source: `customer_core_conformed.customer_life_cycle` (intermediate). This was traced to `customer360.customer_life_cycle_vw` (lake table, confirmed). That lifecycle table is itself built from a cascade of 5 intermediate tables (`active_customer_stg`, `customer_ttm_payment_driver`, `customer_active_subscription_detail_driver`, `subscription_grace_policy`, and `customer_life_cycle` itself) plus 15 direct lake tables across 7 schemas (`analytic_feature`, `enterprise`, `ecomm_mart`, `finance360`, `dp_enterprise`, `customers`, `finance_cln`). **Zero UNRESOLVED entries.**
 
-### Lineage Resolution
+**Column-level lineage:** All 32 target columns fully mapped to `customer360.customer_life_cycle_vw` source columns, with explicit documentation of 6 column renames, 14 COALESCE defaults, 4 derived/computed columns (window LAG + arithmetic), and 2 system-generated columns.
 
-| Intermediate Table | Resolved To | Method |
-|---|---|---|
-| `customer_core_conformed.customer_metric_daily_agg` | `customer360.customer_metric_daily_agg_vw` | Lake registry `table.yaml` + DAG `call_lake_api` task |
-| `customer_core_conformed.customer_life_cycle` | `customer360.customer_life_cycle_vw` | Lake registry `table.yaml` (`table_relative_path: customer_life_cycle`) + DAG S3KeySensor |
+**Key findings appended to analyze.md:**
+- Full A1–E3 facts blocks for all 20 metadata sections
+- 7 known discrepancies documented (stale policy YAML, lake DDL missing `data_source_enum`, incomplete `@PrimaryKey` annotations, etc.)
+- 10-item "Do not claim" list of tempting-but-unproven assertions
 
-### Column-Level Lineage
-
-All 18 dimension columns, 5 base event count measures, and `ttm_gcr_usd_amt` trace directly to **`customer360.customer_life_cycle_vw`** (with column renames: `customer_acquisition_country_name` → `customer_country_name`, `product_pnl_category_list` → `product_ownership_category_list`, `customer_fraud_flag` → `fraud_flag`, etc.). Three further columns (`beginning_customer_qty`, `net_*_qty`) are derived from those measures. Two columns (`data_source_enum`, `etl_build_mst_ts`) have no upstream lake source (constant + system timestamp).
-
-### Key Findings
-- **Grain:** One row per `partition_eval_mst_date` × 18-dimension combination (gap-fill rows included with zero metrics)
-- **PK:** 19-column composite (DQ-enforced); lake DDL is stale (16 cols)
-- **Schedule:** 07:30 AM MST daily; SLA delivery by 08:00 AM MST; TIER_4
-- **RESOLVED_TARGET.json** written with `confidence: "high"`
+**`RESOLVED_TARGET.json` created** at workspace root with schema, table names, lake path, and 8 evidence citations.

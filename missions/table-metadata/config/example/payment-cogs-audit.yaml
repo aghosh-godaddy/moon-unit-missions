@@ -8,6 +8,9 @@ target:
   # Use lake registry naming: <db>/<table> with hyphenated table name.
   lake_table_override: null  # e.g., "enterprise/payment-cogs-audit"
 
+# Optional: owner/expert notes (highest priority after PySpark/DAG code)
+notes: |
+
 sources:
   # Supporting docs. These are secondary sources and must not contradict code.
   confluence_pages: []
@@ -16,6 +19,7 @@ sources:
     enabled: true
     # Optional: override the Alation search query (defaults to detected db.table).
     search_query: null
+    max_queries: 10
 
   additional_docs: []
 

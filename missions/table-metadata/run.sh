@@ -128,6 +128,33 @@ parse_github_blob_url() {
   SOURCE_REPO_URL="https://github.com/${SOURCE_ORG}/${SOURCE_REPO}.git"
 }
 
+read_yaml_notes() {
+  local in_notes=false
+  local line
+  while IFS= read -r line; do
+    if echo "$line" | grep -qE '^notes:[[:space:]]*\|'; then
+      in_notes=true
+      continue
+    fi
+    if $in_notes; then
+      if echo "$line" | grep -qE '^[a-zA-Z0-9_]+:'; then
+        break
+      fi
+      printf '%s\n' "$line"
+    fi
+  done < "$CONFIG_FILE"
+}
+
+read_yaml_max_queries() {
+  local val
+  val=$(grep -E '^[[:space:]]*max_queries:' "$CONFIG_FILE" | head -1 | sed -E 's/.*max_queries: *//;s/ *#.*//' || true)
+  if [[ -z "$val" ]]; then
+    echo "10"
+  else
+    echo "$val"
+  fi
+}
+
 generate_confluence_section() {
   local in_block=false
   while IFS= read -r line; do
@@ -153,11 +180,22 @@ generate_confluence_section() {
 }
 
 generate_input_content() {
-  local lake_override alation_enabled alation_search_query
+  local lake_override alation_enabled alation_search_query alation_max_queries
+  local notes_content notes_section
   lake_override=$(read_yaml_string "lake_table_override")
 
   alation_enabled=$(grep -E '^[[:space:]]*enabled:' "$CONFIG_FILE" | head -1 | sed -E 's/.*enabled: *//;s/ *#.*//')
   alation_search_query=$(read_yaml_string "search_query")
+  alation_max_queries=$(read_yaml_max_queries)
+
+  notes_content=$(read_yaml_notes)
+  if [[ -n "$(echo "$notes_content" | tr -d '[:space:]')" ]]; then
+    local indented_notes
+    indented_notes=$(echo "$notes_content" | sed 's/^  /    /')
+    notes_section=$(printf '    ## USER NOTES (HIGHEST PRIORITY)\n    These notes come directly from the table owner/expert. They take priority over\n    Confluence, Alation, and other secondary sources — but NOT over PySpark/DAG code.\n    Incorporate them into the relevant metadata sections (A2, C4, C7, B1, etc.).\n\n%s' "$indented_notes")
+  else
+    notes_section=""
+  fi
 
   local confluence_section
   confluence_section=$(generate_confluence_section)
@@ -168,7 +206,9 @@ generate_input_content() {
   cat <<EOF
     Generate an accurate business context / metadata document for a Data Lake table.
     The PySpark script and its calling DAG are the source of truth.
-
+${notes_section:+
+${notes_section}
+}
     ## TARGET (INPUT)
     - Identifier: ${IDENTIFIER}
     - Name: ${NAME}
@@ -188,6 +228,7 @@ ${confluence_section}
     ## ALATION
     - Enabled: ${alation_enabled:-false}
     - Search query override: ${alation_search_query:-}
+    - Max queries (most recently saved, include in B2): ${alation_max_queries}
 EOF
 }
 
@@ -270,10 +311,21 @@ cleanup() {
 trap 'cleanup INT'  INT
 trap 'cleanup TERM' TERM
 
+# Merge mu.env with mission .env.local so MOONUNIT_ALATION (and other overrides) reach the container
+MU_ENV_FILE="$SCRIPT_DIR/.mu-env.merged"
+{
+  if [[ -f "$HOME/.config/mu/mu.env" ]]; then
+    cat "$HOME/.config/mu/mu.env"
+  fi
+  echo ""
+  # Mission-local MOONUNIT_* / Alation vars override mu.env when duplicated in container
+  grep -E '^(MOONUNIT_|ALATION_)' "$ENV_FILE" 2>/dev/null || true
+} > "$MU_ENV_FILE"
+
 mu launch "$MANIFEST_FILE" \
   --mount-workspace "$WORKSPACE_DIR" \
   --keep-container \
-  --env-file "$HOME/.config/mu/mu.env" \
+  --env-file "$MU_ENV_FILE" \
   > "$MU_LOG" 2>&1 &
 MU_PID=$!
 

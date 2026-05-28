@@ -1,6 +1,7 @@
 # Generated per run
 .manifest.generated.yaml
 .mu-run.log
+.mu-env.merged
 
 # Per-run shell redirect logs
 output/**/run.log

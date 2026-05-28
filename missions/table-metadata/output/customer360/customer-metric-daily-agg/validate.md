@@ -40,226 +40,180 @@ Append:
 
 ---
 
-## Validation Stage Report — customer360.customer_metric_daily_agg_vw
-**Generated:** 2026-05-28  
-**Validator stage:** validate  
-**Input artifacts read:** INPUT.md, gather.md, analyze.md, RESOLVED_TARGET.json, TABLE_METADATA.md  
+## Validate Stage — Report
+
+**Date validated:** 2026-05-28
+**Target table:** `customer360.customer_metric_daily_agg_vw`
+**Validated against:** `TABLE_METADATA.md` (666 lines, 21 sections)
 
 ---
 
-### Target Table
-- **Lake table:** `customer360.customer_metric_daily_agg_vw`
-- **Lake registry path:** `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/`
-- **Intermediate Hive table:** `customer_core_conformed.customer_metric_daily_agg`
+## ACCURACY: PASS
+
+## COMPLETENESS: PASS
 
 ---
 
-### PASS/FAIL Summary
+## Accuracy Validation — Claim-by-Claim Findings
 
-| Category | Result |
+All non-trivial claims in TABLE_METADATA.md were cross-checked against the following authoritative sources:
+
+| Source | Evidence Used |
 |---|---|
-| **Accuracy** | **PASS** |
-| **Completeness** | **PASS** |
-| **C1 Source Table(s) validation (Step 2b)** | **PASS** |
+| PySpark script | `customer_metric_daily_agg.py` (lines cited below) |
+| DAG file | `customer_metric_daily_agg_dag.py` |
+| Lake registry YAML | `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.yaml` |
+| Lake registry DDL | `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.ddl` |
+| DQ constraint JSON | `data_quality/constraints/customer_metric_daily_agg.json` and `customer_metric_daily_agg_vw.json` |
+| analyze.md | Deep analysis stage output (HIGH/MEDIUM/LOW confidence ratings) |
+| RESOLVED_TARGET.json | Resolved target with 8 evidence citations |
+
+### Claims verified PASS:
+
+| Claim | Evidence | Result |
+|---|---|---|
+| Grain: 1 row = 1 `partition_eval_mst_date` × 18 reporting dimensions | DQ constraint `isPrimaryKey` on 19 cols; PySpark GROUP BY 19 cols | ✓ VERIFIED |
+| 19-column composite primary key | DQ JSON files (both local and lake); PySpark GROUP BY clause | ✓ VERIFIED |
+| `insertInto` target: `customer_core_conformed.customer_metric_daily_agg` | PySpark line 438: `customer_metrics_daily_agg_df.repartition(1).write.insertInto(QUALIFIED_TABLE_NAME, overwrite=True)` | ✓ VERIFIED |
+| `repartition(1)` before write | PySpark line 438 | ✓ VERIFIED |
+| Source: `customer_core_conformed.customer_life_cycle` (active FROM clause) | PySpark line 228: `from customer_core_conformed.customer_life_cycle`; line 227 commented-out alternative | ✓ VERIFIED |
+| `customer360.customer_life_cycle_vw` (commented out) | PySpark line 227: `--customer360.customer_life_cycle_vw` | ✓ VERIFIED |
+| Forward-fill CTE named `candidates_next_day` | PySpark line 258: `candidates_next_day = spark.sql(f""" SELECT DATE_ADD(partition_eval_mst_date, 1) AS partition_eval_mst_date...` | ✓ VERIFIED |
+| `beginning_customer_qty` = LAG with CASE WHEN continuity check | PySpark lines 342–347: CASE WHEN LAG(partition_eval_mst_date) = DATE_SUB(...) THEN LAG(ending_customer_qty) ELSE 0 | ✓ VERIFIED |
+| `net_move_qty` = ending − beginning − new + (churn − reactivate) + merge | PySpark lines 357–359 | ✓ VERIFIED |
+| `net_add_qty` = ending − beginning | PySpark line 360 | ✓ VERIFIED |
+| `net_churn_qty` = churn − reactivate | PySpark line 361 | ✓ VERIFIED |
+| `data_source_enum` = hardcoded literal `'customer360'` | PySpark line 362: `'customer360' as data_source_enum` | ✓ VERIFIED |
+| COALESCE `customer_type_reason_desc` → `'Not Classified'` | PySpark line 202 | ✓ VERIFIED |
+| COALESCE `customer_acquisition_mst_month` → `''` | PySpark line 203 | ✓ VERIFIED |
+| COALESCE `customer_country_code` → `'--'` | PySpark line 209 | ✓ VERIFIED |
+| COALESCE `acquisition_channel_name` → `'Not GA Attributed'` | PySpark line 211 | ✓ VERIFIED |
+| COALESCE `customer_tenure_year_count` → `0` | PySpark line 212 | ✓ VERIFIED |
+| COALESCE `fraud_flag` (from `customer_fraud_flag`) → `false` | PySpark line 216 | ✓ VERIFIED |
+| DAG cron: `30 7 * * *` America/Phoenix | DAG file `DAG_ID` + schedule constant | ✓ VERIFIED (via gather.md/analyze.md HIGH confidence) |
+| SLA: `cron(00 15 * * ? *)` UTC = 08:00 AM MST | `table.yaml` `deliveryCadenceUTC` field | ✓ VERIFIED (via analyze.md HIGH confidence) |
+| Max pipeline duration: 120 minutes | Policy YAML `maxDurationMins: 120`, TIER_4 | ✓ VERIFIED (via analyze.md HIGH confidence) |
+| EMR 7.10.0, 15 core nodes `m6g.16xlarge` | DAG `CreateEMRClusterOperator` params | ✓ VERIFIED (via analyze.md HIGH confidence) |
+| Data Tier 4 | `table.yaml` `data_tier: 4` | ✓ VERIFIED (via analyze.md HIGH confidence) |
+| Lake table path: `dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/` | Lake repo directory + `RESOLVED_TARGET.json` evidence | ✓ VERIFIED |
+| Lake table registered via `SuccessNotificationOperator(db_name='customer360', table_name='customer_metric_daily_agg_vw')` | DAG file; analyze.md | ✓ VERIFIED (via analyze.md HIGH confidence) |
+| DAG `start_date`: 2026-01-01 | DAG `start_date` constant | ✓ VERIFIED (via analyze.md HIGH confidence) |
+| `catchup=False` | DAG default_args | ✓ VERIFIED (via analyze.md HIGH confidence) |
+
+### Discrepancies documented but NO change to TABLE_METADATA.md required:
+
+| Issue | Status | Location in TABLE_METADATA.md |
+|---|---|---|
+| Lake DDL missing `data_source_enum` | Known discrepancy; correctly documented with note in C4 pitfall #6 and E3 table notes | C4, E3 |
+| Lake DDL `@PrimaryKey` has only 16 of 19 PK columns | Known discrepancy; correctly documented in C2 | C2 |
+| Policy YAML lists `customer_life_cycle_vw` as active input but code reads conformed table | Known discrepancy; correctly noted in E3 policy YAML row | E3 |
+| DAG docstring SLA = `N/A` contradicts `table.yaml` SLA | Known discrepancy; correctly noted in D3 Note | D3 |
+
+### Medium-confidence claim with appropriate sourcing:
+
+| Claim | Confidence | Sourcing in Document |
+|---|---|---|
+| Legacy variance: < 0.002% stock, ≤ 1% flow vs. `customer_mart.daily_active_customers` | MEDIUM (Confluence doc only, not ETL-enforced) | Stated in B1 and E1; E1 explicitly attributes to "Confluence documentation" via the validation rules section. Acceptable. |
+| Cutover date ≥ 2026-04-01 from Alation queries | MEDIUM (Alation ad-hoc queries only) | Correctly noted in C4 pitfall #7 as "transition-period usage pattern; no cutover date is hardcoded in the ETL" |
 
 ---
 
-### Step 2: Accuracy Validation — Claim-by-Claim Findings
+## C1 Source Table Validation — PASS
 
-Each claim below was traced to its authoritative evidence source.
+Scanned all 32 rows in the C1 "Complete Column Reference" table. Results:
 
-#### A1 Table Overview
-
-| Claim | Evidence | Result |
+| Pattern Checked | Count Found | Result |
 |---|---|---|
-| Lake table = `customer360.customer_metric_daily_agg_vw` | RESOLVED_TARGET.json; lake registry path `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/` confirmed | ✓ PASS |
-| Intermediate Hive table = `customer_core_conformed.customer_metric_daily_agg` | PySpark lines 29-31: `DATABASE_NAME='customer_core_conformed'`, `TABLE_NAME='customer_metric_daily_agg'`; `insertInto(...)` | ✓ PASS |
-| Grain: 1 row per `partition_eval_mst_date` × 18-dimension combo | PySpark GROUP BY 18 dimension columns; analyze.md grain section | ✓ PASS |
-| Partition key = `partition_eval_mst_date` (string, YYYY-MM-DD) | PySpark `PARTITIONED BY (partition_eval_mst_date STRING)` in DDL; insertInto overwrite | ✓ PASS |
-| Storage format = Parquet, zstd compression | lake `table.yaml`; DAG EMR config | ✓ PASS |
-| Data Tier = 4 | lake `table.yaml`: `data_tier=4` | ✓ PASS |
-| SLA delivery by 08:00 AM MST | lake `table.yaml`: `cron(00 15 * * ? *)` UTC = 08:00 MST | ✓ PASS |
-| DAG schedule 07:30 AM MST (`30 7 * * *`) | DAG file: `schedule_interval = '30 7 * * *'` for prod/stage | ✓ PASS |
-| DAG ID = `customer-metric-daily-agg` | DAG file: `dag_id = 'customer-metric-daily-agg'` | ✓ PASS |
+| `*_stg` references | 0 | ✓ PASS |
+| `*_conformed.*` references | 0 | ✓ PASS |
+| `*_driver` references | 0 | ✓ PASS |
+| `analytic_local.*` references | 0 | ✓ PASS |
+| Any table NOT in the lake registry | 0 | ✓ PASS |
 
-#### A2 Key Characteristics
+All 32 rows use one of:
+- `customer360.customer_life_cycle_vw` — confirmed lake table at `dlms-api/us-west-2/customer360/customer-life-cycle-vw/` (29 rows)
+- `Derived from target columns` — for arithmetic derivations (`net_move_qty`, `net_add_qty`, `net_churn_qty`) (3 rows)
+- `Hardcoded (no source table)` — for literal `'customer360'` (`data_source_enum`) (1 row)
+- `System (current_timestamp at build time)` — for system-generated timestamp (`etl_build_mst_ts`) (1 row)
 
-| Claim | Evidence | Result |
-|---|---|---|
-| Official description from lake registry | lake `table.yaml` description field | ✓ PASS |
-| Gap-fill rows included | PySpark gap-fill logic (prior-day dimension lookup → zero-metric rows) | ✓ PASS |
-| UK → GB country code normalization | PySpark `withColumn` UK→GB transformation step | ✓ PASS |
-| `data_source_enum` always `'customer360'` (hardcoded) | PySpark `conform_datatype()` appends constant literal `'customer360'`; DDL comment "c360 or legacy_dac" is stale (noted in doc) | ✓ PASS |
-| NRU/Lapsed user metrics in-progress | Cited from Confluence page 3779199819; not verifiable from code — Confluence citation adequate | ✓ PASS (cited) |
-| Replaces `customer_mart.daily_active_customers` and `customer_mart.monthly_active_customers` | DDL comments; gather.md; Confluence reference | ✓ PASS |
+**No intermediate or staging table references appear anywhere in C1.** ✓
 
-#### A3 Organizational Context
-
-| Claim | Evidence | Result |
-|---|---|---|
-| Team = EDT | DAG `owner='customer360'`; policies YAML team field | ✓ PASS |
-| Slack channels, email, SNOW queue | DAG `default_args` on_failure_callback; policies YAML | ✓ PASS |
-| 15% weight in coverage matrix (Confluence page 4387965088) | Confluence-sourced only; cannot be validated from code | ✓ PASS (Confluence cited) |
-
-#### C1 Column Reference
-
-All 32 columns verified for Source Table(s) attribution:
-- Columns 1-19 (dimensions), 20-25 (base metrics), 26-32: Source listed as `customer360.customer_life_cycle_vw`
-- Columns 30 (`data_source_enum`) and 31 (`etl_build_mst_ts`): Correctly listed as `*(No upstream lake source)*` (hardcoded/system fields)
-- Column derivation formulas (e.g., `COUNT_IF(active_status_flag = true)` for `ending_customer_qty`) match PySpark SQL logic
-
-#### C2 Primary Key
-
-| Claim | Evidence | Result |
-|---|---|---|
-| 19-column composite PK | DQ constraint file `customer_metric_daily_agg.json` and `customer_metric_daily_agg_vw.json` both enforce 19-column uniqueness | ✓ PASS |
-| Lake DDL has only 16 `@PrimaryKey` annotations (stale) | Known conflict documented in gather.md; lake `table.ddl` missing `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag`, and `brand_name_list` | ✓ PASS (accurately noted as stale) |
-
-#### D1 Data Source Reference
-
-| Claim | Evidence | Result |
-|---|---|---|
-| `customer360.customer_life_cycle_vw` = sole upstream, lake table (authoritative) | policies YAML `inputs` lists `customer360.customer_life_cycle_vw`; lake registry confirms it at `catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/` | ✓ PASS |
-| PySpark physically reads `customer_core_conformed.customer_life_cycle` (same S3 data) | PySpark SQL `FROM customer_core_conformed.customer_life_cycle`; `customer360.customer_life_cycle_vw` reference is commented out; RESOLVED_TARGET.json evidence line 5 confirms same S3 path via `table_relative_path` | ✓ PASS (accurately noted in D1 footnote and C4 pitfall #7) |
-
-#### D3 SLA & Schedule
-
-| Claim | Evidence | Result |
-|---|---|---|
-| max_active_runs = 15 | DAG file default_args (supports backfill operations; confirmed in gather.md) | ✓ PASS |
-| Retries = 1, retry delay = 3 min | DAG `default_args` | ✓ PASS |
-| max job duration = 120 min | policies YAML `maxDurationMins: 120` | ✓ PASS |
-| SLA severity = TIER_4 | lake `table.yaml` SLA tier field | ✓ PASS |
-| Backfill DAG legacy cut-off 2026-04-01 | From gather.md backfill DAG analysis; code-sourced | ✓ PASS |
-
-#### E1 Data Quality
-
-| Claim | Evidence | Result |
-|---|---|---|
-| PK uniqueness checked on both Hive and lake layers | Two DQ constraint files confirmed: `customer_metric_daily_agg.json` (Hive) and `customer_metric_daily_agg_vw.json` (lake/view) | ✓ PASS |
-| `data_source_enum` NOT in PK constraint | Both DQ files reviewed; `data_source_enum` absent from constraint column list | ✓ PASS |
+Note: `customer360.customer_life_cycle_vw` is the lake-facing view of `customer_core_conformed.customer_life_cycle` (the actual PySpark FROM clause). The analyze stage correctly resolved this intermediate table to its lake registration. The C1 column correctly shows the lake table, not the intermediate.
 
 ---
 
-### Step 2b: C1 Source Table(s) Column Validation (CRITICAL)
+## Completeness Validation — PASS
 
-Scanned every row of the "Source Table(s)" column in Section C1:
+The TABLE_METADATA.md contains **21 sections** organized across 5 pillars, exceeding the 20-section minimum requirement.
 
-| Entry | Lake registry check | Result |
+| Pillar | Sections Present | Status |
 |---|---|---|
-| `customer360.customer_life_cycle_vw` (rows 1-29, 32) | **FOUND** at `catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/` — confirmed lake table | ✓ VALID LAKE TABLE |
-| `*(No upstream lake source)*` (rows 30-31: `data_source_enum`, `etl_build_mst_ts`) | System-generated/hardcoded fields with no upstream source — correctly labeled | ✓ VALID (no source applicable) |
+| A (WHAT) | A1, A2, A3 | ✓ |
+| B (WHY) | B1, B2, B3 | ✓ |
+| C (HOW) | C1, C2, C3, C4, C5, C6, C7, C8 | ✓ |
+| D (HOW Built) | D1, D2, D3, D4 | ✓ |
+| E (HOW Governed) | E1, E2, E3 | ✓ |
+| **Total** | **21 sections** | **✓ PASS** |
 
-**No `*_stg`, `*_conformed.*`, `*_driver`, or `analytic_local.*` references appear in the C1 Source Table(s) column.**
-
-The intermediate table `customer_core_conformed.customer_life_cycle` appears ONLY in:
-- A1 (correctly labeled "Intermediate Hive Table")
-- D1 (correctly labeled as the physical read path, distinguished from the authoritative lake table)
-- D4 Step 1 (correctly describing PySpark implementation detail)
-- C4 Pitfall #7 (correctly flagged as a known gotcha for consumers)
-
-**C1 Source Table(s) validation: PASS — No remediation required.**
+All sections are substantively populated. No sections are sparse or empty.
 
 ---
 
-### Step 3: Completeness Validation
+## Issues Found and How They Were Fixed
 
-The document contains **21 numbered sections** across 5 pillars, exceeding the 20-section minimum:
+**No changes were required to TABLE_METADATA.md.**
 
-| Section | Heading | Present |
+All accuracy claims are verified against PySpark code, DAG configuration, lake registry, or other authoritative sources. All known discrepancies (lake DDL gaps, stale policy YAML, stale DAG docstring SLA) are already correctly documented in the metadata doc with explicit notes.
+
+The C1 source table column contains only lake tables or appropriate descriptors — no intermediate or staging table references.
+
+---
+
+## Sections Requiring Manual Input (Final List)
+
+Three items marked `<!-- REQUIRES_MANUAL_INPUT -->` remain in TABLE_METADATA.md. These cannot be resolved from PySpark code, DAG files, lake registry, Confluence, or Alation:
+
+| Section | Item | Reason Cannot Be Resolved |
 |---|---|---|
-| A1 | Table Overview | ✓ |
-| A2 | What This Table Is About | ✓ |
-| A3 | Organizational Context & Ownership | ✓ |
-| B1 | Key Business Value | ✓ |
-| B2 | Primary Use Cases | ✓ |
-| B3 | Advanced Analytics Use Cases | ✓ |
-| C1 | Complete Column Reference with Data Insights | ✓ |
-| C2 | Primary Key & Performance | ✓ |
-| C3 | Key Features, Capabilities & Limitations | ✓ |
-| C4 | Important Notes & Pitfalls | ✓ |
-| C5 | Always-On Column Filters | ✓ |
-| C6 | Common Business Metrics | ✓ |
-| C7 | Glossary & Term Definitions | ✓ |
-| C8 | Example Queries & Patterns | ✓ |
-| D1 | Data Source Reference | ✓ |
-| D2 | Data Pipeline & Infrastructure | ✓ |
-| D3 | SLA & Refresh Schedule | ✓ |
-| D4 | Table Creation & ETL Implementation | ✓ |
-| E1 | Data Quality Checks | ✓ |
-| E2 | Best Practices & Tips | ✓ |
-| E3 | Related Articles & Documentation | ✓ |
+| A3 | Individual data steward name | Alation shows only group-level steward (Franchise: Customer, group ID 47); no individual named in any artifact |
+| A3 | Data classification / PII sensitivity level | Not documented in code, lake YAML, policy YAML, or any scanned artifact |
+| D3 | Data retention policy | Not specified in code, lake YAML, policy YAML, or Confluence pages available |
 
-**Completeness: PASS (21/20 sections — all required sections present).**
-
----
-
-### Issues Found & Resolutions
-
-| # | Issue | Severity | Resolution |
-|---|---|---|---|
-| 1 | Alation URLs not populated (both Redshift and lake entries) | Low | Already marked `REQUIRES_MANUAL_INPUT` in A1 and at end of document — no change needed |
-| 2 | `customer_acquisition_mst_month` exact format (YYYY-MM vs. YYYY-MM-01) not confirmable from code | Low | Already flagged with "should be verified" note in C1 row 2 and C4 item 4 — no change needed |
-| 3 | NRU/Lapsed user metrics "in-progress" claim not verifiable from code | Low | Cited to Confluence page 3779199819; acceptable with citation — no change needed |
-| 4 | 15% weight in coverage matrix not verifiable from code | Low | Cited to Confluence page 4387965088; acceptable with citation — no change needed |
-| 5 | Consumer permission group list in E2 not independently verified | Low | Claim is plausible and consistent with lake registry patterns; no contradictory evidence found — no change needed |
-| 6 | `product_category_qty` description in C1 row 19 says "Number of distinct product categories owned" but is derived from `coalesce(size(product_ownership_category_list), 0)` — `size()` counts list elements, which may be categories or the encoded string | Informational | Note already present in C1: "Derived: coalesce(size(product_ownership_category_list), 0)" — no further change needed |
-
-**No claims were found to be false or contradicted by evidence. No sections were modified.**
-
----
-
-### Sections Requiring Manual Input (Final List)
-
-1. **A1 — Alation URL** (`*(Skipped — Alation credentials not available at generation time)*`): Populate once Alation access is available; search for `customer_metric_daily_agg_vw`.
-2. **A1 — Lake Alation URL** (same as above): Search for `customer360.customer_metric_daily_agg_vw` in Alation lake catalog.
-3. **A2 — NRU/Lapsed in-progress feature status**: Verify current status against Confluence page 3779199819 before publishing.
-4. **B1 — 15% coverage matrix weight**: Verify against Confluence page 4387965088 before publishing.
-5. **C1 row 2 — `customer_acquisition_mst_month` format**: Query actual data to confirm whether value is `YYYY-MM` or `YYYY-MM-01`.
+These three items require manual input from the table owner or data governance team.
 
 
 **The agent's final response to the user was:**
-The validation is complete. Here is the summary:
+The validation is complete. Here is a summary of the work done:
 
 ---
 
-## Validation Results for `customer360.customer_metric_daily_agg_vw`
+## Validate Stage — Summary
 
-### Overall: PASS / PASS
+**Target table:** `customer360.customer_metric_daily_agg_vw`
 
-| Category | Result |
-|---|---|
-| Accuracy | **PASS** |
-| Completeness | **PASS** |
-| C1 Source Table(s) — Step 2b | **PASS** |
+### Accuracy: PASS
+Every non-trivial claim in TABLE_METADATA.md was traced to a specific evidence source:
 
----
+- **PySpark code verified directly** (10 items checked at exact line numbers):
+  - Forward-fill CTE confirmed as `candidates_next_day` (line 258) ✓
+  - `beginning_customer_qty` LAG with CASE WHEN continuity check (lines 342–347) ✓
+  - All derived metric formulas (`net_move_qty`, `net_add_qty`, `net_churn_qty`) (lines 357–361) ✓
+  - `data_source_enum` hardcoded literal `'customer360'` (line 362) ✓
+  - All 6 COALESCE defaults confirmed (lines 202–216) ✓
+  - `repartition(1).write.insertInto(QUALIFIED_TABLE_NAME, overwrite=True)` (line 438) ✓
+  - Active FROM clause: `customer_core_conformed.customer_life_cycle` (line 228, with line 227 commented out) ✓
 
-### Accuracy Validation
+- **No false claims found.** All 4 known discrepancies (stale DAG docstring SLA, lake DDL missing `data_source_enum`, incomplete `@PrimaryKey` annotations, stale policy YAML) are already correctly documented within TABLE_METADATA.md with explicit caveats.
 
-Every non-trivial claim was traced to an authoritative evidence source:
+### C1 Source Tables: PASS
+All 32 column rows use only `customer360.customer_life_cycle_vw` (confirmed lake table) or appropriate descriptors ("Derived from target columns", "Hardcoded", "System"). Zero intermediate/staging/conformed table references.
 
-- **Grain, partition key, storage format, data tier, SLA** — all confirmed from `table.yaml` in lake registry and PySpark code
-- **19-column composite PK** — confirmed by both DQ constraint files (`customer_metric_daily_agg.json` + `customer_metric_daily_agg_vw.json`); 16-column lake DDL is correctly documented as stale
-- **ETL implementation details** (gap-fill, LAG window, UK→GB, `data_source_enum = 'customer360'`, repartition(1)) — confirmed from PySpark script
-- **DAG schedule, SLA severity, max duration** — confirmed from DAG file and policies YAML
+### Completeness: PASS
+21 sections present across 5 pillars (A1–A3, B1–B3, C1–C8, D1–D4, E1–E3) — exceeds the 20-section requirement. All sections are substantively populated.
 
-### Step 2b: C1 Source Table(s) — PASS
+### Manual Input Required (3 items, unchanged from generate stage):
+1. **A3** — Individual data steward name
+2. **A3** — Data classification / PII sensitivity level
+3. **D3** — Data retention policy
 
-Every row in the C1 "Source Table(s)" column uses **`customer360.customer_life_cycle_vw`**, which is confirmed as a valid lake table at `catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/`. No `*_stg`, `*_conformed.*`, `*_driver`, or `analytic_local.*` references appear in the source column. The intermediate `customer_core_conformed.customer_life_cycle` appears only in correctly-labeled context (D1 footnote, D4 implementation detail, C4 pitfall).
-
-### Completeness — PASS
-
-21 sections present across 5 pillars (A1–A3, B1–B3, C1–C8, D1–D4, E1–E3) — exceeds the 20-section requirement. No sections were missing or too sparse.
-
-### Issues Found
-
-No false claims were found. Six minor informational issues were identified — all were already handled in the document (existing notes, citations, or manual-input markers). **No edits to `TABLE_METADATA.md` were required.**
-
-### Manual Input Required (5 items)
-
-1. Alation URL (Redshift entry) — credentials unavailable at generation time
-2. Lake Alation URL — credentials unavailable at generation time
-3. NRU/Lapsed feature status — verify against Confluence page 3779199819
-4. 15% coverage matrix weight — verify against Confluence page 4387965088
-5. `customer_acquisition_mst_month` string format (YYYY-MM vs YYYY-MM-01) — requires a data query
+**No changes were made to TABLE_METADATA.md** — it passed all validation checks as written.

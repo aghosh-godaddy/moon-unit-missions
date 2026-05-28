@@ -26,6 +26,8 @@ be used **only when consistent** with the code.
   an actual lake table (one that exists in `gdcorp-dna/lake`). If traversal
   fails, mark it `UNRESOLVED — requires manual input`. Never list intermediate
   tables as column sources in C1.
+- **User notes in config** (`notes: |` in YAML) are highest priority after code.
+  Fold them into A2, C4, C7, B1, etc. They override Confluence/Alation text.
 - **Never guess.** If a section cannot be populated with high confidence, mark
   it as requiring manual input using:
   `<!-- REQUIRES_MANUAL_INPUT: <BA|DE|DG|DP> -->`

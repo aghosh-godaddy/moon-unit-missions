@@ -21,8 +21,10 @@ Read that first; keep this skill as a pointer.
 
 - The **exact** GitHub *blob* URL to the PySpark script that populates the table.
   - Format: `https://github.com/<org>/<repo>/blob/<ref>/<path>.py`
-- Any supporting docs that explain business meaning (Confluence, Alation, design docs).
-- Optional: `lake_table_override` if the target lake table is known and auto-detect might fail.
+- Optional **`notes:`** block — expert context; highest priority after PySpark/DAG code.
+- Any supporting docs (Confluence, Alation, design docs).
+- Optional: `lake_table_override` if auto-detect might fail.
+- Optional: `sources.alation.max_queries` (default 10) for B2 Alation query listings.
 
 ## Gotchas
 
@@ -36,6 +38,8 @@ Read that first; keep this skill as a pointer.
 
 1. Create the YAML config file under `missions/table-metadata/config/...`.
 2. Populate at minimum `target.pyspark_url`.
-3. Add any supporting URLs under `sources.confluence_pages` / `sources.additional_docs`.
+3. Add `notes: |` when the user provides special instructions.
+4. Set `sources.alation.max_queries` if they want more/fewer queries in B2.
+5. Add supporting URLs under `sources.confluence_pages` / `sources.additional_docs`.
 4. Do **not** run `missions/table-metadata/run.sh` unless explicitly asked.
 
