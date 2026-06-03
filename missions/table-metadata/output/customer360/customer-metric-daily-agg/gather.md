@@ -102,16 +102,17 @@ curl -s -H "Token: $TOKEN" \
   "https://godaddy.alationcloud.com/integration/v2/table/?name=<TABLE_NAME>&limit=50"
 ```
    From the results, identify:
-   - **Redshift Serverless Dev entry**: look for entries where the key contains
-     a Redshift data source (often has "Redshift" or "Serverless" in the ds_name
-     or the key path). Record its Alation table ID.
+   - **Redshift Serverless Dev entry**: look for entries where the Alation key
+     starts with `dev.` (e.g., `63.dev.customer360.table_name`). This is the
+     Dev Serverless environment. ALWAYS use the `dev.*` entry, NOT the `bi.*`
+     (prod) entry. Record its Alation table ID.
    - **Lake entry**: look for entries where the key matches the Hive/Glue catalog
      (often contains the schema directly like `<schema>.<table>`). Record its Alation table ID.
 
    Construct Alation URLs as: `https://godaddy.alationcloud.com/table/<ID>/`
 
 4. Record in gather.md under "## Alation" a structured block:
-   - Redshift table: name, database (e.g. "Redshift - Serverless - Dev"), schema, Alation URL
+   - Redshift Dev Serverless table (dev.* key): name, database ("Redshift - Serverless - Dev"), schema, Alation URL
    - Lake table: name, schema, Alation URL
    - Any descriptions or custom fields found
 
@@ -153,7 +154,7 @@ Append a structured, evidence-oriented report including:
 - Any DDL/policy/DQ files consulted and what they claim
 - Confluence summaries (if any)
 - Alation section with:
-  - Redshift Serverless table info (table name, database, schema, Alation URL)
+  - Redshift Dev Serverless table info (dev.* entry: table name, database, schema, Alation URL)
   - Lake table Alation URL
   - Any descriptions or custom fields retrieved
 - Alation Queries section (full query details per Step 6b)
@@ -163,9 +164,10 @@ Append a structured, evidence-oriented report including:
 
 ---
 
-## Gather Stage — Research Summary
+## gather stage output
 
-**Git ref checked out:** `main` (HEAD: `7523b6d5`) — repo `repos/dof-dpaas-customer-feature/`
+**Gathered:** 2026-05-28  
+**Repo ref checked out:** `main` (already at HEAD)
 
 ---
 
@@ -173,554 +175,288 @@ Append a structured, evidence-oriented report including:
 
 | Field | Value |
 |---|---|
-| Repo | `gdcorp-dna/dof-dpaas-customer-feature` |
-| Ref | `main` (HEAD `7523b6d5`) |
-| Script path | `customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py` |
-| FEED_NAME | `customer_metric_daily_agg` |
-| Author / initial commit | `aghosh`, `11/06/2025` |
+| Repo URL | https://github.com/gdcorp-dna/dof-dpaas-customer-feature.git |
+| Git ref | main |
+| File path | `customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py` |
+| FEED_NAME (constant) | `customer_metric_daily_agg` |
+| App name (Spark) | `customer_metrics_daily_agg` |
+| Initial author / date | aghosh, 11/06/2025 |
 
-### Output write target (from code)
+### Output Write Targets (from PySpark code)
 
-```
-customer_core_conformed.customer_metric_daily_agg
-  → s3://gd-ckpetlbatch-{AWS_ENV}-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg/
-  write mode: insertInto(overwrite=True), repartition(1)
-  partition key: partition_eval_mst_date
-```
-
-The DAG also pushes a Lake success notification for `customer360.customer_metric_daily_agg_vw` (the Glue/Hive catalog view on the same S3 data), which is the public-facing lake table.
+| Target | Details |
+|---|---|
+| **Lake table (primary)** | `customer_core_conformed.customer_metric_daily_agg` |
+| Write method | `df.repartition(1).write.insertInto(QUALIFIED_TABLE_NAME, overwrite=True)` |
+| Post-write repair | `MSCK REPAIR TABLE customer_core_conformed.customer_metric_daily_agg` (best-effort) |
+| S3 location (DDL) | `s3://gd-ckpetlbatch-{AWS_ENV}-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg/` |
+| Lake view name | `customer360.customer_metric_daily_agg_vw` (registered via SuccessNotificationOperator in DAG, prod only) |
+| Redshift table (prod) | `customer360.customer_metric_daily_agg_vw` (upserted from staging via DAG SQL steps) |
+| Redshift staging | `customer_core_conformed_prod.customer_metric_daily_agg_vw_stg` (prod); `customer_core_conformed_dev.customer_metric_daily_agg_vw_stg` (non-prod) |
 
 ---
 
 ## DAG Identity
 
+### Primary DAG: `customer-metric-daily-agg`
+
 | Field | Value |
 |---|---|
-| DAG path | `customer360/customer-metrics/src/dag/customer_metric_daily_agg_dag.py` |
+| DAG file | `customer360/customer-metrics/src/dag/customer_metric_daily_agg_dag.py` |
 | DAG ID | `customer-metric-daily-agg` |
-| Schedule | `30 7 * * *` = **7:30 AM MST daily** (disabled in dev-private) |
-| Start date | `2026-01-01` |
-| Timezone | `America/Phoenix` (MST) |
-| EMR release | `emr-7.10.0` |
-| EMR cluster | 15 core nodes, `m6g.16xlarge` |
-| Catchup | `False` |
-| Max active runs | `15` |
-| Retries | `1`, retry delay `3 min` |
-| Owner | `customer360` |
-| Tags | `domain:customer`, `sub-domain:active-customer`, `layer:enterprise`, `team:EDT`, `pipeline-group:active-customer`, `special:daily` |
+| Schedule (prod/stage) | `30 7 * * *` — **7:30 AM MST daily** |
+| Schedule (dev-private) | None (manual trigger only) |
+| Start date | `2026-01-01` (MST timezone) |
+| catchup | False |
+| max_active_runs | 15 |
+| owner | `customer360` |
+| retries | 1 (retry_delay: 3 min) |
+| depends_on_past | False |
+| EMR release | emr-7.10.0 |
+| Core instance | m6g.16xlarge × 15 |
+| Master instance | m6g.xlarge |
+| Spark submit cmd | `spark-submit --deploy-mode cluster --master yarn` |
+| DDL file passed | `customer_metric_daily_agg.ddl` (via `--files`) |
+| PySpark args | `--environment`, `--start_mst_date`, `--end_mst_date`, `--spark_conf_str`, `--sb_app_id`, `--sb_setting_id`, `--run_emr_task_id` |
+| Switchboard setting ID | `customer-metric-daily-agg` |
+| Slack alerts (prod) | `#edt-airflow-alerts` |
+| OnCall email | `dl-bi-enterprise-data@godaddy.com` |
+| OnCall SNOW | `DEV-EDT-OnCall` |
+| Redshift conn ID | `CKP-ANALYTICS-REDSHIFT` |
+| DAG tags | `domain:customer`, `sub-domain:active-customer`, `layer:enterprise`, `team:EDT`, `pipeline-group:active-customer`, `special:daily` |
 
-### DAG parameters passed to PySpark
-- `--environment {AWS_ENV}`
-- `--start_mst_date {start_mst_date}` (from DAG config or `logical_date` in MST if not provided)
-- `--end_mst_date {end_mst_date}` (same fallback)
-- `--spark_conf_str` (from `params.spark_config`)
-- `--sb_app_id` / `--sb_setting_id` (Switchboard config)
+### DAG Task Flow (primary)
 
-### Task flow
 ```
 dag_config
-  → dependencies [wait_for customer360.customer_life_cycle_vw S3 success file]
-  → end_dependency_check
-  → create_redshift_tables [create_customer_metric_daily_agg.sql, create_customer_metric_daily_agg_stg.sql]
-  → create_emr
-  → run_customer_metric_daily_agg  ← PySpark step
-  → remove_emr
-  → dq_check_customer_metric_daily_agg_local  [DQ on customer_core_conformed.customer_metric_daily_agg]
-  → conditional_call_lake_api
-    → [prod] call_lake_api (SuccessNotificationOperator: customer360.customer_metric_daily_agg_vw)
-    → [non-prod] skip_call_lake_api
-  → s3_to_redshift_customer_metric_daily_agg_stg  (PARQUET COPY from S3 → staging table)
-  → insert_customer_metric_daily_agg  (upsert staging → customer360.customer_metric_daily_agg_vw)
-  → check_for_failure_branch → succeed/fail_dag_run
-  [prod only] call_lake_api → dq_check_customer_metric_daily_agg_lake
+  >> dependencies (wait_for_customer360.customer_life_cycle_vw via S3KeySensor)
+  >> end_dependency_check
+  >> create_redshift_tables [create_customer_metric_daily_agg.sql, create_customer_metric_daily_agg_stg.sql]
+  >> create_redshift_tables_done
+  >> create_emr
+  >> run_customer_metric_daily_agg    ← calls PySpark script
+  >> remove_emr
+  >> customer_metric_daily_agg_local_dq   (DQ on customer_core_conformed.customer_metric_daily_agg)
+  >> conditional_call_lake_api
+     ├── call_lake_api (prod only) → customer_metric_daily_agg_lake_dq (DQ on customer360.customer_metric_daily_agg_vw)
+     └── skip_call_lake_api
+  >> s3_to_redshift_customer_metric_daily_agg_stg
+  >> insert_customer_metric_daily_agg   (delete+insert into Redshift final table)
+  >> check_for_failure_branch >> [succeed_dag_run | fail_dag_run]
 ```
 
-### Operational contacts (from DAG docstring)
-- Slack alerts: `#edt-airflow-alerts` (prod), `#edt-airflow-alerts-low-priority` (other)
-- Dev group: `#edt` (private)
-- OnCall: `#marketing-data-product-engineering`
-- OnCall Email: `dl-bi-enterprise-data@godaddy.com`
-- SNOW: `DEV-EDT-OnCall`
-- Stakeholders: `#marketing-data-products-help`
-- SLA in DAG docstring: `N/A`; Data Tier: `N/A`
+### Upstream Dependency (S3 sensor)
+
+| Table | S3 Success File Pattern |
+|---|---|
+| `customer360.customer_life_cycle_vw` | `s3://gd-{team}-{env}-success-files/customer360/customer_life_cycle_vw/{YYYY}/{MM}/{DD}/_SUCCESS` |
+
+### Backfill DAG: `customer-metric-daily-agg-backfill`
+
+| Field | Value |
+|---|---|
+| DAG file | `customer360/customer-metrics/src/dag/customer_metric_daily_agg_backfill_dag.py` |
+| DAG ID | `customer-metric-daily-agg-backfill` |
+| Schedule | None (manual trigger only) |
+| PySpark script | `customer_metric_daily_agg_backfill.py` (separate backfill script) |
+| Default start_mst_date | 2024-05-01 |
+| Default legacy_cut_off_mst_date | 2026-04-01 |
+| Default end_mst_date | 2026-05-25 |
+| Extra param | `--legacy_cut_off_mst_date` (not present in primary DAG) |
 
 ---
 
-## Upstream / Source Tables Referenced in PySpark
+## Upstream Tables Referenced in PySpark
 
-| Table | Status | Notes |
-|---|---|---|
-| `customer_core_conformed.customer_life_cycle` | **Active (used)** | Primary source; full WHERE range is `start_mst_date_minus_1` to `end_mst_date` |
-| `customer360.customer_life_cycle_vw` | **Commented out** | `--customer360.customer_life_cycle_vw` in SQL comment; not active |
+| Table | Usage in Code |
+|---|---|
+| `customer_core_conformed.customer_life_cycle` | **Active source** — queried in `get_customer_metrics_daily_agg()` SQL (`from customer_core_conformed.customer_life_cycle`) |
+| `customer360.customer_life_cycle_vw` | **Commented out** — appears as `--customer360.customer_life_cycle_vw` (code comment only); DAG sensor still waits on it |
 
-The DAG dependency sensor waits for the S3 success file of `customer360.customer_life_cycle_vw`, suggesting the pipeline depends on the lifecycle job upstream even though the code reads from the conformed table.
-
----
-
-## Column Inventory (from PySpark + DDL, authoritative)
-
-### Dimensions (18 columns — composite key)
-| Column | Type | Description |
-|---|---|---|
-| `customer_type_reason_desc` | string | Reason for customer type classification |
-| `customer_acquisition_mst_month` | string | Month of customer acquisition (MST), truncated to month |
-| `customer_domestic_international_name` | string | Domestic vs International classification |
-| `customer_region_1_name` | string | Geographic region level 1 |
-| `customer_region_2_name` | string | Geographic region level 2 |
-| `customer_region_3_name` | string | Geographic region level 3 |
-| `customer_country_name` | string | Customer country name at evaluation date |
-| `customer_country_code` | string | Customer country code (normalised: "UK" → "GB") |
-| `customer_type_name` | string | Customer type at evaluation date |
-| `acquisition_channel_name` | string | Acquisition channel |
-| `customer_tenure_year_count` | int | Customer tenure in years (integer) |
-| `product_ownership_category_list` | string | Owned product category list (string-encoded) |
-| `product_ownership_line_list` | string | Owned product line list (string-encoded) |
-| `reseller_type_name` | string | Reseller type name |
-| `fraud_flag` | boolean | True if customer marked as fraud as of evaluation date |
-| `point_of_purchase_name` | string | Point of purchase name from acquisition bill |
-| `customer_acquisition_bill_fraud_flag` | boolean | True if acquisition bill has fraud record |
-| `brand_name_list` | string | List of all brands associated with the customer |
-
-### Measures / Metrics (11 columns)
-| Column | Type | Description |
-|---|---|---|
-| `ttm_gcr_usd_amt` | decimal(18,2) | Total gross cash received (GCR) USD in trailing twelve months |
-| `ending_customer_qty` | bigint | Ending customer count as of evaluation date |
-| `churn_customer_qty` | bigint | Customers churned on evaluation date |
-| `merge_customer_qty` | bigint | Customers merged on evaluation date |
-| `new_customer_qty` | bigint | New customers on evaluation date |
-| `reactivate_customer_qty` | bigint | Reactivated customers on evaluation date |
-| `beginning_customer_qty` | bigint | Beginning customer count from prior day (window function: LAG over dims) |
-| `net_move_qty` | bigint | `ending - beginning - new + (churn - reactivate) + merge` |
-| `net_add_qty` | bigint | `ending - beginning` |
-| `net_churn_qty` | bigint | `churn - reactivate` |
-| `product_category_qty` | int | Count of distinct product categories owned (size of category list) |
-
-### System / metadata columns
-| Column | Type | Description |
-|---|---|---|
-| `data_source_enum` | string | Hardcoded `'customer360'` |
-| `etl_build_mst_ts` | timestamp | ETL build timestamp in MST |
-| `partition_eval_mst_date` | string | Partition date (MST) — **always filter on this column** |
+**Note:** The PySpark reads `customer_core_conformed.customer_life_cycle` (the physical Hive/Glue table), not the lake view `customer360.customer_life_cycle_vw`. However, the DAG dependency sensor waits for `customer360.customer_life_cycle_vw`'s `_SUCCESS` file, and the policies YAML and lake table lineage list both tables as inputs.
 
 ---
 
-## Business Logic Notes (from PySpark code)
+## DDL / SQL Files Consulted
 
-1. **Date window for source query:** reads from `start_mst_date - 1 day` through `end_mst_date` from the source table, but the final output is filtered to `start_mst_date` through `end_mst_date`. The extra day is needed to compute `beginning_customer_qty` via LAG.
+### `customer_metric_daily_agg.ddl` (Hive/Glue DDL — passed to PySpark at runtime)
 
-2. **NULL-fill for missing dimension combinations:** a "candidates_next_day" self-join pattern ensures that every dimension combination seen on day T is carried forward to day T+1 with zero metrics. This prevents gaps in the daily series for slowly-changing dimension combinations.
+- Creates `{DATABASE_NAME}.customer_metric_daily_agg` as Hive external table
+- **31 columns** (18 dimension + 10 metric + 3 audit/meta)
+- Partition: `partition_eval_mst_date string`
+- Storage: PARQUET, ZSTD compression (Spark config)
+- Location: `s3://gd-ckpetlbatch-{AWS_ENV}-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg/`
 
-3. **`beginning_customer_qty` computation:** uses a window LAG over all 18 dimension columns, ordered by `partition_eval_mst_date`. If the prior day exists in the window, `beginning = prior day's ending`; otherwise `0`.
+### `create_customer_metric_daily_agg.sql` (Redshift DDL)
 
-4. **Country code normalisation:** `customer_country_code = 'UK'` → `'GB'` applied in `conform_datatype`.
-
-5. **Fraud flag rename:** the internal SQL uses `customer_fraud_flag`; `conform_datatype` renames it to `fraud_flag` for the output.
-
-6. **`COALESCE` defaults applied in source SQL:**
-   - `customer_type_reason_desc` → `'Not Classified'`
-   - `customer_domestic_international_name` → `'International'`
-   - `customer_region_1_name` → `'International - RoW'`
-   - `customer_region_2_name` → `'Rest of World (RoW)'`
-   - `customer_region_3_name` → `'NA'`
-   - `customer_acquisition_country_name` → `'Unknown'`
-   - `customer_acquisition_country_code` → `'--'`
-   - `customer_type_name` → `'Not Classified'`
-   - `customer_acquisition_channel_name` → `'Not GA Attributed'`
-   - `customer_tenure_year_count` → `0`
-   - `customer_fraud_flag` → `false`
-   - `customer_acquisition_bill_fraud_flag` → `false`
-   - `point_of_purchase_name` → `'Unknown'`
-
----
-
-## DDL Files Consulted
-
-### `ddls/customer_metric_daily_agg.ddl` (Hive/Glue DDL)
-- Creates `{DATABASE_NAME}.customer_metric_daily_agg` (rendered as `customer_core_conformed.customer_metric_daily_agg` at runtime)
-- STORED AS PARQUET, PARTITIONED BY `partition_eval_mst_date string`
-- S3 location: `s3://gd-ckpetlbatch-{AWS_ENV}-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg/`
-- Includes all 33 columns + partition column; comments match PySpark description
-- Status: **consistent with PySpark code**
-
-### `ddls/create_customer_metric_daily_agg.sql` (Redshift DDL)
 - Creates `{database}.customer_metric_daily_agg_vw` in Redshift
-- DISTKEY / SORTKEY on `partition_eval_mst_date`
-- All 33 columns present including `data_source_enum VARCHAR(50)` and `partition_eval_mst_date DATE`
-- Status: **consistent** — Redshift copy of the lake table
+- DISTSTYLE AUTO, DISTKEY: `partition_eval_mst_date`, SORTKEY: `partition_eval_mst_date`
+- `partition_eval_mst_date` is typed **DATE** in Redshift (vs. **string** in Hive DDL)
+- Array list columns (`product_ownership_category_list`, `product_ownership_line_list`, `brand_name_list`) stored as VARCHAR(65535) in Redshift — note: `insert_customer_metric_daily_agg.sql` strips `[` and `]` brackets before loading
 
-### `ddls/insert_customer_metric_daily_agg.sql` (Redshift upsert)
-- DELETE + INSERT pattern scoped to `end_mst_date`
-- Strips array bracket artifacts from `product_ownership_*_list` and `brand_name_list` columns (Parquet string arrays serialized as `[val1, val2]`)
-- Sources from staging table `{database_stg}.customer_metric_daily_agg_vw_stg`
+### `create_customer_metric_daily_agg_stg.sql` (Redshift staging DDL)
 
-### Lake repo: `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.ddl`
-- Creates `customer360.customer_metric_daily_agg_vw` (lake catalog table)
-- **Missing `data_source_enum` column** — present in Hive DDL and Redshift DDL but absent from lake DDL (discrepancy, noted below)
-- 16 columns marked `@PrimaryKey` (note: `data_source_enum`, `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag` absent from primary key set in this DDL vs 19-column key in DQ constraint)
+- Creates `{database_stg}.customer_metric_daily_agg_vw_stg` — same schema as final minus `partition_eval_mst_date`
+- Used as intermediate staging table in S3→Redshift copy step
+
+### `insert_customer_metric_daily_agg.sql` (Redshift upsert logic)
+
+- DELETE existing rows for `partition_eval_mst_date` = `end_mst_date`
+- INSERT from staging, stripping array bracket characters from list columns
+- `partition_eval_mst_date` cast as DATE from `end_mst_date` xcom value
 
 ---
 
-## Policy Files Consulted
+## Policies Files
 
 ### `policies/customer_metric_daily_agg_dag.yaml`
-- Schema: `urn:dna:pipeline:metadata:/v1`
-- Pipeline version: `1.0.0`
-- SLA: `maxDurationMins: 120`, severity: `TIER_4`
-- **Inputs declared:**
-  - `customer360.customer_life_cycle_vw` (platform: datalake)
-  - `customer_core_conformed.customer_life_cycle` (platform: s3-ckpetlbatch)
-- **Outputs declared:**
-  - `customer360.customer_metric_daily_agg_vw` (platform: datalake)
-  - `customer_core_conformed.customer_metric_daily_agg` (platform: s3-ckpetlbatch)
 
-### `policies/environment.prod.yaml`
-- Team: `EDT`
-- OnCall: `DEV-EDT-Oncall`
-- Contact email: `emerald-data-team-org@godaddy.com`
-- Slack: `edt-airflow-alerts`
-- MWAA environment: `dof-customers` (AWS account `688051721285`)
-- EMR Serverless: AWS account `664289052486`
-- S3 (data): AWS account `688051721285`
-- Datalake: AWS account `028140660016`
-- Redshift: AWS account `561403605607` (cluster ARN recorded)
+| Field | Value |
+|---|---|
+| Schema URN | `urn:dna:pipeline:metadata:/v1` |
+| Pipeline version | 1.0.0 |
+| Description | Daily aggregation of customer metrics |
+| DAG ID | `customer-metric-daily-agg` |
+| SLA max duration | 120 minutes |
+| SLA severity | TIER_4 |
+| Input 1 | `customer360.customer_life_cycle_vw` (datalake, parquet) |
+| Input 2 | `customer_core_conformed.customer_life_cycle` (s3-ckpetlbatch, parquet) |
+| Output 1 | `customer360.customer_metric_daily_agg_vw` (datalake, parquet) |
+| Output 2 | `customer_core_conformed.customer_metric_daily_agg` (s3-ckpetlbatch, `s3://gd-ckpetlbatch-prod-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg`) |
 
 ---
 
-## Data Quality Files Consulted
+## Data Quality Files
 
 ### `data_quality/constraints/customer_metric_daily_agg.json`
-- Database: `customer_core_conformed`, table: `customer_metric_daily_agg`
-- Constraint: `isPrimaryKey` on all 19 columns:
-  `partition_eval_mst_date, customer_type_reason_desc, customer_acquisition_mst_month, customer_domestic_international_name, customer_region_1_name, customer_region_2_name, customer_region_3_name, customer_country_name, customer_country_code, customer_type_name, acquisition_channel_name, customer_tenure_year_count, product_ownership_category_list, product_ownership_line_list, reseller_type_name, fraud_flag, point_of_purchase_name, customer_acquisition_bill_fraud_flag, brand_name_list`
-- Status: enabled
-- Type: USER_DEFINED
+
+- Database: `customer_core_conformed`, Table: `customer_metric_daily_agg`
+- **Primary key check** (USER_DEFINED, enabled): 19-column composite PK = `partition_eval_mst_date` + all 18 dimension columns
 
 ### `data_quality/constraints/customer_metric_daily_agg_vw.json`
-- Same 19-column primary key constraint on `customer360.customer_metric_daily_agg_vw`
+
+- Database: `customer360`, Table: `customer_metric_daily_agg_vw`
+- **Same 19-column composite PK check** as above (enabled)
+
+**Composite PK columns (19):**
+`partition_eval_mst_date`, `customer_type_reason_desc`, `customer_acquisition_mst_month`, `customer_domestic_international_name`, `customer_region_1_name`, `customer_region_2_name`, `customer_region_3_name`, `customer_country_name`, `customer_country_code`, `customer_type_name`, `acquisition_channel_name`, `customer_tenure_year_count`, `product_ownership_category_list`, `product_ownership_line_list`, `reseller_type_name`, `fraud_flag`, `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag`, `brand_name_list`
 
 ---
 
-## Confluence Pages
+## Lake Repo Registry (repos/lake)
 
-### Parent page: Customer360 (ID 3779199819)
-URL: https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/3779199819/Customer360
+**Path:** `catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/`
 
-**Relevant extract (Business Metrics Layer section):**
-> Business Metrics Layer ✅ — Business-ready metrics including Active Customers, 2+ Customers, Daily & Monthly customer metrics.
->
-> `customer_metric_daily_agg_vw` — 🟡 NRU and Lapsed users metrics co-existing with all externally reported metrics
-> - **Replaces (Deprecated):** `customer_mart.daily_active_customers`, `customer_mart.monthly_active_customers`
-> - **Recommended instead of:** `customer_mart.daily_active_customers` (barring hour latency needs)
+### table.yaml
 
-Child pages identified: `Customer360 Design Docs` (3829342710), `Customer360 Business Context Structure` (4387965088), `Customer 360 — Phased Adoption Plan` (4423945148).
+| Field | Value |
+|---|---|
+| Database name | `customer360` |
+| Database root | `gd-ckpetlbatch-prod-customer-core-conformed` |
+| Path to database | `customer_core_conformed` |
+| Table relative path | `customer_metric_daily_agg` |
+| Description | "Customer Metric Daily Aggregated on Reporting Dims for a given day" |
+| Storage format | Parquet |
+| Table type | PARTITIONED |
+| Partition key | `partition_eval_mst_date` (string) |
+| SLA delivery cron (UTC) | `cron(00 15 * * ? *)` → 08:00 AM MST daily |
+| SLA description | "Dataset would be delivered by 08:00 AM MST every day" |
+| SLO identifier | `customer360.customer_metric_daily_agg_vw` |
+| legacyLookBackEnabled | true |
+| Data tier | 4 |
+| Owner | `ckpetlbatch` |
+| Project code | `edt` |
+| Lineage upstream | `customer360.customer_life_cycle_vw` |
 
-### Relevant child: Customer Metrics (ID 4042131239)
-URL: https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/4042131239
+**Consumers with permissions:**
+- `ckpetlbatch.dev_private`
+- `data_lab.dev_private`
+- `analytics.prod`
+- `data_platform.stage`, `data_platform.prod`
+- `martech_data.stage`, `martech_data.dev_private`, `martech_data.prod`
+- `revenue_and_relevance.stage`, `revenue_and_relevance.dev_private`, `revenue_and_relevance.prod`, `revenue_and_relevance.test`
 
-**Customer Lifecycle Events driving metrics:**
-| Event | Key date field | Metric |
-|---|---|---|
-| Customer Acquisition | `acquisition_mst_date` | `new_customer_qty` |
-| Customer Billing (Paid) | `bill_modified_mst_date` | `ending_customer_qty`, `ttm_gcr_usd_amt` |
-| Customer Churn | `churned_mst_date` | `churn_customer_qty` |
-| Customer Merge | `merged_mst_date` | `merge_customer_qty` |
-| Customer Reactivated | `reactivated_mst_date` | `reactivate_customer_qty` |
-| Customer Type | `evaluation_mst_date` | dimension |
-| Customer Fraud | `evaluation_mst_date` | `fraud_flag` |
+### table.ddl (lake registry DDL)
 
-### Relevant child: C360 Customer Reporting Metrics (ID 4042131351)
-Defines official business metric definitions:
-- **Active Customer** (SEC 10-K definition): individual/entity with paid transactions in trailing twelve months OR paid subscriptions as of end of period
-- **New Customer**: first paid or Domain Change of Account (COA) order; Third Party App Store orders excluded
-- **Churned Customer**: no active paid subscription AND no paid transactions in trailing twelve months
-- **2+ Customer**: Active Customers with payable resources in 2+ distinct Product PnL categories
-- **Net Adds**: `(New paid + Reactivations) − (Churned + Customer Type Moves + Merges)` = `ending - beginning`
-- **Note:** `ARPU/ABPU` and rate metrics (Churn Rate, Retention Rate) are NOT persisted in this table — derive from MAC/DAC
+- Table name: `customer_metric_daily_agg_vw`
+- 31 non-partition columns
+- `@PrimaryKey` annotation on 16 of the 18 dimension columns (excludes `point_of_purchase_name` and `customer_acquisition_bill_fraud_flag` from @PrimaryKey annotations — see Conflicts section)
+- `data_source_enum` column absent from lake DDL (present in Hive DDL and PySpark output)
 
-### Relevant child: [WIP] Customer Metrics Daily Agg Data Validation Test Cases (ID 4192469643)
-- Validates `beginning_customer_qty` continuity: current day beginning must equal prior day ending
-- `net_move_qty` across date range should sum to 0
-- Variance thresholds vs `customer_mart.daily_active_customers` legacy:
-  - `beginning_customer_qty` / `ending_customer_qty`: < 0.002% variance
-  - `new_customer_qty`, `reactivated_customer_qty`, `merge_customer_qty`, `churned_customer_qty`: ≤ 1% variance
-- Partner BU net moves must be ≥ 0 (partner customers cannot revert to other types)
+---
+
+## Confluence
+
+**Page ID:** 3779199819 — https://godaddy-corp.atlassian.net/wiki/spaces/BI/pages/3779199819/Customer360
+
+**Status:** Skipped — `MOONUNIT_JIRA` and `MOONUNIT_ATLASSIAN` environment variables not available. Confluence content could not be fetched.
 
 ---
 
 ## Alation
 
-### Lake Table
-| Field | Value |
-|---|---|
-| Table name | `customer_metric_daily_agg_vw` |
-| Schema | `customer360` |
-| Alation key | `81.AwsDataCatalog.customer360.customer_metric_daily_agg_vw` |
-| Alation table ID | `7038346` |
-| Alation URL | https://godaddy.alationcloud.com/table/7038346/ |
-| Steward | Franchise: Customer (group ID 47) |
-| Description | "A daily aggregated metrics table providing summarized customer performance indicators — Daily aggregation of customer metrics" |
-| Data Tier | `4` |
-| SLA | cron `00 15 * * ? *` (UTC) = 08:00 AM MST every day |
-| SLO Identifier | `customer360.customer_metric_daily_agg_vw` |
-| Partition key | `partition_eval_mst_date` |
-| Table type | PARTITIONED |
-| Data Lake Owner | ckpetlbatch — `emerald-data-team-org@godaddy.com` — OnCall: `DEV-EDT-OnCall` — Slack: `#ckp-aws-etl-batch` |
-| Lineage upstream | `customer360.customer_life_cycle_vw` |
-| Permissions | ckpetlbatch.dev_private, data_lab.dev_private, analytics.prod, data_platform.{stage,prod}, martech_data.{stage,dev_private,prod}, revenue_and_relevance.{stage,dev_private,prod,test} |
-
-### Redshift Table (Prod)
-| Field | Value |
-|---|---|
-| Table name | `customer_metric_daily_agg_vw` |
-| Database / Schema | `bi.customer360` |
-| Alation key | `63.bi.customer360.customer_metric_daily_agg_vw` |
-| Alation table ID | `7038887` |
-| Alation URL | https://godaddy.alationcloud.com/table/7038887/ |
-
-Other Redshift/dev entries found: IDs 7038766 (`customer_core_conformed_dev`), 7038918 (`dev.customer360`), 7039657 (`bi.dna_approved`), 7046304 (`dev.dna_approved`), 7047021 (`bi.customer360_dev`).
+**Status:** Skipped — `MOONUNIT_ALATION` environment variable not set. Credentials not available.
 
 ---
 
 ## Alation Queries
 
-6 queries found referencing `customer_metric_daily_agg`.
-
----
-
-### Query 1
-
-| Field | Value |
-|---|---|
-| Query ID | `138586` |
-| Title | C360 Cash Dash with budget |
-| Author | unknown (not returned by API) |
-| Description | |
-| Schedule | Not scheduled |
-| Last Saved | unknown |
-| Last Run | unknown |
-| Datasource | DS 63 (bi / Redshift Serverless) |
-| Alation Query URL | https://godaddy.alationcloud.com/query/138586/ |
-
-**SQL:**
-```sql
-DROP TABLE IF EXISTS dna_sandbox.c360_test_sz_2;
-
-CREATE TABLE dna_sandbox.c360_test_sz_2 AS
-(
-
-WITH base AS
-(
-SELECT 
-evaluation_mst_date,
-date_trunc('quarter', evaluation_mst_date) AS q_start,
-dateadd(quarter,1,date_trunc('quarter',evaluation_mst_date)) AS nq_start,
-datediff(day,date_trunc('quarter',evaluation_mst_date),evaluation_mst_date) AS day_in_q,
-...
-```
-*(Full SQL: 19,093 characters — ad-hoc Cash Dash analysis)*
-
----
-
-### Query 2
-
-| Field | Value |
-|---|---|
-| Query ID | `136952` |
-| Title | NC validate EBP |
-| Author | unknown |
-| Description | |
-| Schedule | Not scheduled |
-| Last Saved | unknown |
-| Last Run | unknown |
-| Datasource | DS 63 (bi / Redshift Serverless) |
-| Alation Query URL | https://godaddy.alationcloud.com/query/136952/ |
-
-**SQL:**
-```sql
--- Cash Dash Customer View
-select date_trunc('day',evaluation_mst_date),
-sum(beginning_customer_qty) as begin,
-sum(new_customer_qty) as new, 
-sum(net_churn_qty) as net_churn,
-sum(net_adds_qty)as net_add, 
-sum(churned_customer_qty)as churn
-from  bi.bi_dashboards_prod.customer_vs_target
-where evaluation_mst_date between '2026-01-01' and current_date
-```
-*(Full SQL: 3,912 characters — validation query; references `customer_vs_target` which wraps this table)*
-
----
-
-### Query 3
-
-| Field | Value |
-|---|---|
-| Query ID | `138254` |
-| Title | C360 - mv_customer_metric_daily_agg_vw_union |
-| Author | unknown |
-| Description | |
-| Schedule | Not scheduled |
-| Last Saved | unknown |
-| Last Run | unknown |
-| Datasource | DS 63 (bi / Redshift Serverless) |
-| Alation Query URL | https://godaddy.alationcloud.com/query/138254/ |
-
-**SQL:**
-```sql
-DROP TABLE IF EXISTS bi.ba_usi.mv_customer_metric_daily_agg_vw_union;
-
-CREATE TABLE bi.ba_usi.mv_customer_metric_daily_agg_vw_union AS
-	WITH legacy_final AS (
-		SELECT * FROM bi.dna_approved.daily_active_customers
-		WHERE evaluation_mst_date <= '2026-03-31'
-	),
-	c360_final AS (
-	    SELECT DAC.*,
-	        trunc(date_trunc('month', dac.partition_eval_mst_date)) AS evaluation_mst_month, 
-	        rd.relative_month, rd.relative_month_period_name 
-	    FROM bi.customer360.customer_metric_daily_agg_vw AS DAC
-	    LEFT JOIN (SELECT calendar_date, relative_month, relative_month_period_name
-	        FROM bi_prod.dim_relative_date 
-	        WHERE max_date = (SELECT MAX(partition_eval_mst_date) FROM bi.customer360.customer_metric_daily_agg_vw)) rd
-	    ON dac.partition_eval_mst_date = rd.calendar_date
-	    WHERE DAC.partition_eval_mst_date >= '2026-04-01'
-	)
-SELECT ... FROM legacy_final UNION ALL SELECT ... FROM c360_final;
-```
-*(Cutover union view: legacy data ≤ 2026-03-31 from `dna_approved.daily_active_customers`; c360 data ≥ 2026-04-01)*
-
----
-
-### Query 4
-
-| Field | Value |
-|---|---|
-| Query ID | `138184` |
-| Title | C360 - customer_metric_daily_agg_vw_mv |
-| Author | unknown |
-| Description | |
-| Schedule | Not scheduled |
-| Last Saved | unknown |
-| Last Run | unknown |
-| Datasource | DS 132 (dev Redshift) |
-| Alation Query URL | https://godaddy.alationcloud.com/query/138184/ |
-
-**SQL:**
-```sql
-DROP TABLE IF EXISTS dev.ba_usi.customer_metric_daily_agg_vw_mv;
-
-CREATE TABLE dev.ba_usi.customer_metric_daily_agg_vw_mv AS
-    SELECT 
-        DAC.*,
-        trunc(date_trunc('month', dac.partition_eval_mst_date)) AS evaluation_mst_month, 
-        rd.relative_month, rd.relative_month_period_name 
-    FROM ckp_analytic_share.customer360.customer_metric_daily_agg_vw AS DAC
-    LEFT JOIN (
-        SELECT calendar_date, relative_month, relative_month_period_name
-        FROM bi_prod.dim_relative_date 
-        WHERE max_date = (SELECT MAX(partition_eval_mst_date)
-        FROM ckp_analytic_share.customer360.customer_metric_daily_agg_vw)) rd
-    ON dac.partition_eval_mst_date = rd.calendar_date;
-```
-
----
-
-### Query 5
-
-| Field | Value |
-|---|---|
-| Query ID | `128804` |
-| Title | NC validate DAC/MAC/Cash Dash |
-| Author | unknown |
-| Description | |
-| Schedule | Not scheduled |
-| Last Saved | unknown |
-| Last Run | unknown |
-| Datasource | DS 132 (dev Redshift) |
-| Alation Query URL | https://godaddy.alationcloud.com/query/128804/ |
-
-**SQL:**
-```sql
--- Cash Dash Customer View
-select date_trunc('day',evaluation_mst_date),
-sum(beginning_customer_qty) as begin,
-sum(new_customer_qty) as new, 
-sum(net_churn_qty) as net_churn,
-sum(net_adds_qty)as net_add,
-sum(churned_customer_qty)as churn
-from  ba_corporate.customer_vs_target
-where evaluation_mst_date between '2026-01-01' and '2026-04-30'
-```
-*(Full SQL: 6,551 characters — validation of DAC/MAC vs C360)*
-
----
-
-### Query 6
-
-| Field | Value |
-|---|---|
-| Query ID | `127875` |
-| Title | customer vs target v2 |
-| Author | unknown |
-| Description | |
-| Schedule | Not scheduled |
-| Last Saved | unknown |
-| Last Run | unknown |
-| Datasource | DS 132 (dev Redshift) |
-| Alation Query URL | https://godaddy.alationcloud.com/query/127875/ |
-
-**SQL:**
-```sql
-select top 1 * from customer360.customer_metric_daily_agg_vw;
-
--- test the date
-drop table if exists day;
-create temp table day as
-select 
-    evaluation_mst_date,
-    date_trunc('quarter', evaluation_mst_date) as q_start,
-    ...
-```
-*(Full SQL: 29,271 characters — customer vs target comparison dashboard development query)*
+No Alation queries retrieved — credentials not available.
 
 ---
 
 ## Conflicts / Discrepancies
 
-| # | Source | Claim | Code says | Action |
-|---|---|---|---|---|
-| 1 | Policy YAML (`customer_metric_daily_agg_dag.yaml`) | Input: `customer360.customer_life_cycle_vw` (as active input) | PySpark SQL reads from `customer_core_conformed.customer_life_cycle`; the `customer360.customer_life_cycle_vw` reference is **commented out** | Validate: policy file appears stale; **code is authoritative** |
-| 2 | Lake DDL (`table.ddl` in lake repo) | Missing `data_source_enum` column entirely | PySpark conform step + Hive DDL + Redshift DDL all include `data_source_enum string` (always `'customer360'`) | Validate: lake DDL needs to be updated |
-| 3 | Lake DDL `table.ddl` `@PrimaryKey` annotation | 16 columns annotated as primary key (missing `point_of_purchase_name`, `customer_acquisition_bill_fraud_flag`, `data_source_enum`) | DQ constraint JSON explicitly lists 19-column composite key (partition_date + 18 dims including `point_of_purchase_name` and `customer_acquisition_bill_fraud_flag`) | Validate: lake DDL primary key annotations are incomplete |
-| 4 | Alation queries (e.g. query 138254) | Cutover date is `2026-03-31 / 2026-04-01` — legacy data used before that date | Code does not hardcode any cutover date; it is a full replacement | Informational: migration is in progress; queries reflect transition period |
-| 5 | Alation queries use `evaluation_mst_date` | Legacy column name `evaluation_mst_date` used in some queries | Lake table uses `partition_eval_mst_date` | Column was renamed in C360 vs legacy `customer_mart.daily_active_customers`; downstream SQL must adapt |
-| 6 | DAG dependency sensor | Waits for `customer360.customer_life_cycle_vw` S3 success file | PySpark reads `customer_core_conformed.customer_life_cycle` (the "conformed" version), not the vw | Confirms the lifecycle conformed table is populated by the same pipeline that creates the vw; dependency is consistent but naming discrepancy warrants documentation |
-| 7 | DAG docstring SLA | `N/A` | Alation / lake table.yaml SLA: `cron(00 15 * * ? *)` = 08:00 AM MST; policy YAML: `maxDurationMins: 120, TIER_4` | Validate: DAG docstring is out of date; Alation/policy YAML reflect actual SLA |
+| # | Location | Discrepancy | Code Says (Truth) |
+|---|---|---|---|
+| 1 | PySpark SQL vs. DAG sensor | PySpark reads `customer_core_conformed.customer_life_cycle` (physical table); DAG S3 sensor waits on `customer360.customer_life_cycle_vw` success file | The job actually reads the physical table, not the view. Policy YAML lists both as inputs. |
+| 2 | Lake registry `table.ddl` (PK annotations) vs. DQ constraints | Lake DDL `@PrimaryKey` annotations cover only 16 dimensions (excludes `point_of_purchase_name` and `customer_acquisition_bill_fraud_flag`). DQ JSON and PySpark group-by use all 18 dimensions. | PySpark `group by 1..19` + DQ JSON = 19-column PK (18 dims + date). Lake DDL @PrimaryKey = 16. |
+| 3 | Lake registry `table.ddl` vs. Hive `customer_metric_daily_agg.ddl` | Lake DDL is named `customer_metric_daily_agg_vw` and **omits** `data_source_enum` column. Hive DDL includes `data_source_enum string COMMENT 'Indicates the source...'`. PySpark hard-codes `'customer360' as data_source_enum`. | PySpark and Hive DDL include `data_source_enum`; lake DDL does not — lake DDL is incomplete/stale. |
+| 4 | Redshift DDL `partition_eval_mst_date` type vs. Hive DDL | Hive DDL: `partition_eval_mst_date string`. Redshift DDL: `partition_eval_mst_date DATE`. PySpark writes `cast(partition_eval_mst_date as string)`. | PySpark casts to string for Hive write; Redshift insert SQL casts to DATE on insert. Both are intentional for their respective targets. |
+| 5 | Backfill DAG policy YAML DAG ID | `policies/customer_metric_daily_agg_backfill_dag.yaml` lists DAG ID as `customer-metric-daily-backfill-agg` but the DAG file sets `DAG_ID = "customer-metric-daily-agg-backfill"`. | DAG Python code is authoritative: `customer-metric-daily-agg-backfill`. |
+| 6 | DAG SLA (code) vs. lake table SLA | DAG `documentation_markdown` says `SLA: N/A`. Policy YAML says SLA max 120 min, TIER_4. Lake `table.yaml` says delivery by 08:00 AM MST (cron 15:00 UTC). | Policy YAML and lake table.yaml are more authoritative for SLA; DAG doc is informal placeholder. |
 
+---
+
+## Summary of Key Facts (Evidence-Based)
+
+- **Table:** `customer_core_conformed.customer_metric_daily_agg` (Hive/Glue/S3); exposed as `customer360.customer_metric_daily_agg_vw` (lake view) and `customer360.customer_metric_daily_agg_vw` (Redshift prod)
+- **Grain:** One row per (partition_eval_mst_date, 18 reporting dimensions)
+- **Dimensions (18):** customer_type_reason_desc, customer_acquisition_mst_month, customer_domestic_international_name, customer_region_1_name, customer_region_2_name, customer_region_3_name, customer_country_name, customer_country_code, customer_type_name, acquisition_channel_name, customer_tenure_year_count, product_ownership_category_list, product_ownership_line_list, reseller_type_name, fraud_flag, point_of_purchase_name, customer_acquisition_bill_fraud_flag, brand_name_list
+- **Metrics (10):** ttm_gcr_usd_amt, ending_customer_qty, churn_customer_qty, merge_customer_qty, new_customer_qty, reactivate_customer_qty, beginning_customer_qty, net_move_qty, net_add_qty, net_churn_qty
+- **Derived metrics (computed in final SELECT):** net_move_qty = ending - beginning - new + (churn - reactivate) + merge; net_add_qty = ending - beginning; net_churn_qty = churn - reactivate
+- **Direct source:** `customer_core_conformed.customer_life_cycle` (physical table)
+- **Schedule:** Daily at 07:30 AM MST (cron `30 7 * * *`)
+- **SLA:** Deliver by 08:00 AM MST (15:00 UTC) per lake registry; policy YAML max 120 min, TIER_4
+- **Partition column:** `partition_eval_mst_date` (string in Hive, DATE in Redshift)
+- **DAG owner:** `customer360` team; oncall: `#marketing-data-product-engineering`, email `dl-bi-enterprise-data@godaddy.com`
+- **User notes confirmed by code:** Daily roll-up ✓; 18 reporting dimensions ✓; replaces `customer_mart.daily_active_customers` (per user note; `data_source_enum='customer360'` in code; backfill DAG references `legacy_cut_off_mst_date=2026-04-01`); always filter on `partition_eval_mst_date` ✓ (partition column)
 
 **The agent's final response to the user was:**
-All research is complete and appended to `gather.md`. Here is a summary of what was gathered:
+Here is a summary of the research and findings gathered:
 
-## Summary
+---
 
-**PySpark script:** `customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py` on `main` (HEAD `7523b6d5`). Writes to `customer_core_conformed.customer_metric_daily_agg` via `insertInto(overwrite=True)` partitioned by `partition_eval_mst_date`.
+## Gather Stage Complete
 
-**Output tables:**
-- **Lake (conformed):** `customer_core_conformed.customer_metric_daily_agg` → S3 at `s3://gd-ckpetlbatch-{env}-customer-core-conformed/customer_core_conformed/customer_metric_daily_agg/`
-- **Lake catalog view:** `customer360.customer_metric_daily_agg_vw` (registered via SuccessNotificationOperator)
-- **Redshift (prod):** `customer360.customer_metric_daily_agg_vw`
+### Sources consulted
 
-**DAG:** `customer-metric-daily-agg`, schedule `30 7 * * *` (7:30 AM MST daily), start date `2026-01-01`, EMR 7.10.0, team EDT.
+1. **PySpark script** (`customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py`, `main` branch) — primary source of truth
+2. **DAG** (`src/dag/customer_metric_daily_agg_dag.py`) — authoritative for schedule, dependencies, Redshift loading
+3. **Backfill DAG** (`src/dag/customer_metric_daily_agg_backfill_dag.py`) — manual-only, confirms legacy cutoff date 2026-04-01
+4. **Hive DDL** (`src/ddls/customer_metric_daily_agg.ddl`) — runtime DDL passed to PySpark
+5. **Redshift DDLs** (`create_customer_metric_daily_agg.sql`, `create_customer_metric_daily_agg_stg.sql`, `insert_customer_metric_daily_agg.sql`)
+6. **Policies YAML** (`src/policies/customer_metric_daily_agg_dag.yaml`) — lineage, SLA, I/O surfaces
+7. **Data quality constraints** (2 JSON files) — 19-column composite PK check
+8. **Lake registry** (`repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/`) — table.yaml and table.ddl
+9. **Confluence** — skipped (no `MOONUNIT_JIRA`/`MOONUNIT_ATLASSIAN` credentials)
+10. **Alation** — skipped (no `MOONUNIT_ALATION` credentials)
 
-**Table grain:** Daily, by **18 reporting dimensions** (customer type, acquisition month, geo/region hierarchy, channel, tenure, product lists, reseller type, fraud flags, brand list, point-of-purchase).
+### Key verified facts
 
-**Key metrics:** `ending_customer_qty`, `new_customer_qty`, `churn_customer_qty`, `reactivate_customer_qty`, `merge_customer_qty`, `beginning_customer_qty`, `net_move_qty`, `net_add_qty`, `net_churn_qty`, `ttm_gcr_usd_amt`, `product_category_qty`.
-
-**Replaces:** `customer_mart.daily_active_customers` (confirmed by Confluence + user notes).
-
-**Alation entries:** Lake table ID `7038346` at https://godaddy.alationcloud.com/table/7038346/ ; Redshift prod ID `7038887` at https://godaddy.alationcloud.com/table/7038887/. SLA: delivered by 08:00 AM MST daily.
-
-**6 Alation queries** found — all ad-hoc/dev; none scheduled. Key pattern: migration union queries bridging legacy `daily_active_customers` (data ≤ 2026-03-31) with c360 (data ≥ 2026-04-01).
-
-**7 conflicts documented**, most notably: policy YAML lists the commented-out `customer_life_cycle_vw` as input (code reads `customer_life_cycle`); lake DDL missing `data_source_enum` column; DAG docstring SLA is `N/A` but Alation/policy has `TIER_4 / 08:00 AM MST`.
+- **Output tables:** `customer_core_conformed.customer_metric_daily_agg` (Hive/S3); `customer360.customer_metric_daily_agg_vw` (lake + Redshift)
+- **Grain:** 1 row per day × 18 reporting dimensions
+- **Source:** `customer_core_conformed.customer_life_cycle` (physical); DAG sensor waits on `customer360.customer_life_cycle_vw` success file
+- **Schedule:** Daily 7:30 AM MST; SLA delivery by 8:00 AM MST; Data Tier 4
+- **User notes confirmed:** Daily roll-up ✓, 18 dimensions ✓, replaces legacy `customer_mart.daily_active_customers` ✓ (backfill legacy cutoff 2026-04-01), filter on `partition_eval_mst_date` ✓
+- **5 conflicts/discrepancies** recorded (PK annotation mismatch in lake DDL, missing `data_source_enum` in lake DDL, commented-out view in PySpark vs. still-active DAG sensor, backfill policy YAML has wrong DAG ID, DAG doc says SLA N/A but lake registry says 8 AM MST)

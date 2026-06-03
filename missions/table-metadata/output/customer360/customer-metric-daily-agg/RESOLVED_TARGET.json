@@ -5,13 +5,13 @@
   "lake_table_path": "customer360/customer-metric-daily-agg-vw",
   "confidence": "high",
   "evidence": [
-    "PySpark customer_metric_daily_agg.py line 438: insertInto('customer_core_conformed.customer_metric_daily_agg', overwrite=True)",
-    "DAG customer_metric_daily_agg_dag.py: SuccessNotificationOperator(db_name='customer360', table_name='customer_metric_daily_agg_vw')",
-    "Lake registry confirmed at repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.ddl",
-    "Lake registry YAML at repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.yaml",
-    "Alation lake table ID 7038346: key='81.AwsDataCatalog.customer360.customer_metric_daily_agg_vw'",
-    "Policy YAML outputs declare: customer360.customer_metric_daily_agg_vw (platform: datalake)",
-    "Physical write target customer_core_conformed.customer_metric_daily_agg is intermediate; lake-facing view is customer360.customer_metric_daily_agg_vw",
-    "No lake_table_override provided in INPUT.md; code evidence is unambiguous"
+    "PySpark customer_metric_daily_agg.py:438 — insertInto('customer_core_conformed.customer_metric_daily_agg', overwrite=True)",
+    "PySpark constants: DATABASE_NAME='customer_core_conformed', TABLE_NAME='customer_metric_daily_agg' (lines 29-31)",
+    "Lake registry confirmed at repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.yaml",
+    "table.yaml: table_relative_path='customer_metric_daily_agg' under customer_core_conformed S3 root",
+    "table.yaml: sloIdentifier='customer360.customer_metric_daily_agg_vw'",
+    "DAG SuccessNotificationOperator (prod) registers customer360.customer_metric_daily_agg_vw in lake",
+    "policies/customer_metric_daily_agg_dag.yaml: output='customer360.customer_metric_daily_agg_vw' (datalake, parquet)",
+    "No lake_table_override provided in INPUT.md — no conflict"
   ]
 }

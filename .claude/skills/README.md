@@ -14,8 +14,9 @@ does. Skills here are auto-discovered when working anywhere in this repo.
 
 - **Mission-scoped skills** prefix with the mission directory name. The
   prefix matches `missions/<name>/`, making the scope obvious at a glance.
-  - `column-comments-config` → for the `missions/column-comments/` mission.
-  - Future: `<next-mission>-config`, `<mission>-debug`, etc.
+ - `column-comments-config` → for the `missions/column-comments/` mission.
+ - `table-metadata-config` → for the `missions/table-metadata/` mission.
+ - `semantic-model-config` → for the `missions/semantic-model/` mission.
 
 - **Cross-mission skills** use a generic verb-or-noun name with no prefix.
   Reach across missions or operate on shared infrastructure.

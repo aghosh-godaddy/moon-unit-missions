@@ -13,7 +13,11 @@ launcher, configs, and outputs.
 
 Currently:
 - `missions/column-comments/` — enriches Data Lake table DDLs with
-  standardized column descriptions.
+ standardized column descriptions.
+- `missions/table-metadata/` — generates 5-pillar business metadata docs
+ from PySpark + DAG code.
+- `missions/semantic-model/` — generates OSI-compliant semantic model YAML
+ from PySpark + DAG code.
 
 ## Conventions across missions
 

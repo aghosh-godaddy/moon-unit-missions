@@ -1,0 +1,14 @@
+{
+  "schema": "customer360",
+  "table_hyphen": "customer-life-cycle-vw",
+  "table_underscore": "customer_life_cycle_vw",
+  "lake_table_path": "customer360/customer-life-cycle-vw",
+  "semantic_model_name": "customer360_customer_life_cycle_analytics",
+  "confidence": "high",
+  "evidence": [
+    "repos/dof-dpaas-customer-feature/customer360/customer-metrics/src/dag/customer_life_cycle_dag.py: SuccessNotificationOperator targets customer360.customer_life_cycle_vw (prod env only)",
+    "repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.yaml: exists in lake registry with description 'Analytic Dataset for Customer Life Cycle', data_tier=4",
+    "repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.ddl: canonical 34-column DDL for lake view",
+    "repos/dof-dpaas-customer-feature/customer360/customer-metrics/src/pyspark/customer_life_cycle.py: insertInto('customer_core_conformed.customer_life_cycle', overwrite=True) — internal staging table promoted to lake view via DAG post-step"
+  ]
+}

@@ -16,9 +16,11 @@ missions/column-comments/output/**/run.log
 # copied out to output/<db>/<table>/ on completion)
 missions/column-comments/output/**/.workspace/
 missions/table-metadata/output/**/.workspace/
+missions/semantic-model/output/**/.workspace/
 
 # Per-run shell-redirect logs from chained launches
 missions/table-metadata/output/**/run.log
+missions/semantic-model/output/**/run.log
 
 # macOS
 .DS_Store

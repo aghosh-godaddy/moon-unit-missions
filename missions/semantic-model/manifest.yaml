@@ -1,0 +1,378 @@
+version: "1"
+input:
+  source: semantic-model
+  url: "__GENERATED_BY_RUN_SH__"
+  content: "__GENERATED_BY_RUN_SH__"
+
+plan:
+  repositories:
+    - url: "__GENERATED_BY_RUN_SH__SOURCE_REPO_URL__"
+      writable: false
+      description: >
+        Source repository containing the authoritative PySpark script and related
+        DAG/DDL/policy/data-quality folders.
+    - url: https://github.com/gdcorp-dna/lake.git
+      writable: false
+      description: >
+        GoDaddy Data Lake registry. Contains table DDL and metadata YAML files
+        under catalog/config/prod/us-west-2/<db>/<table>/ or
+        catalog/config/prod/dlms-api/us-west-2/<db>/<table>/.
+
+  stages:
+    - name: gather
+      model: claude-sonnet-4-6
+      skills: []
+      output: gather.md
+      prompt: |
+        You are a Data Governance analyst. Your job is to gather ONLY verifiable facts
+        about a Data Lake table from the authoritative ETL code and supporting sources.
+        Do not guess. If something is unknown, say "Unknown" and explain what you checked.
+
+        ## Source-of-truth rule
+        The PySpark script and the DAG that calls it are the source of truth. If Alation,
+        Confluence, DDL, policies, or other docs conflict with code, treat the code as
+        correct and record the discrepancy for validation.
+
+        ## Step 1: Read INPUT.md
+        Read `INPUT.md` in your workspace. It contains:
+        - PySpark GitHub URL + parsed repo/ref/path
+        - Repository folder names inside the container (under `repos/`)
+        - Optional lake table override and semantic model name
+        - Supporting docs (Confluence URLs, other URLs)
+        - Alation configuration
+
+        Use INPUT.md as the contract for what to fetch and where to look.
+
+        ## Step 2: Check out the exact Git ref for the source repo
+        INPUT.md includes the desired git ref (branch/tag/SHA) and the source repo URL.
+        The Moon Units framework clones repos into `repos/<repo-name>/` where repo-name is
+        derived from the git URL (e.g., `https://github.com/org/my-repo.git` → `repos/my-repo/`).
+
+        Determine the source repo folder name from the URL in INPUT.md (strip org and .git).
+        Then checkout the desired ref:
+
+        ```bash
+        git -C repos/<repo-name> fetch --all --tags
+        git -C repos/<repo-name> checkout <ref_from_INPUT_md>
+        ```
+
+        ## Step 3: Read the PySpark script and the calling DAG
+        - Read the PySpark file at the path from INPUT.md.
+        - Locate and read the DAG file that calls it. Per repo convention, from the parent
+          folder of the pyspark folder you should find sibling folders: `dag/`, `policies/`,
+          `data_quality/`, `ddl/`.
+        - The DAG must be treated as authoritative for schedule/cadence, dependencies, and
+          which job/version is run.
+        - **Extract all join conditions** (explicit `on=` keys, join predicates) — these
+          will become OSI relationships in later stages.
+
+        ## Step 4: Collect nearby repo context (secondary sources)
+        - Read relevant files under sibling folders:
+          - `ddl/` (table DDLs) — helpful but may be stale
+          - `policies/` — helpful but may be stale
+          - `data_quality/` — checks and expectations (treat as evidence, not truth)
+        Record any conflicts with code explicitly.
+
+        ## Step 5: Fetch Confluence pages (if provided)
+        For each URL in INPUT.md under CONFLUENCE PAGES, fetch page content via Atlassian REST API.
+        The page ID is the numeric part of the URL path.
+
+        **IMPORTANT: Parent pages may link to child pages.** Fetch the provided page first,
+        list child pages, identify relevant ones, fetch only those.
+
+        Credentials:
+        - Prefer `MOONUNIT_JIRA` env var (JSON: {"url","email","api_token"}) OR
+        - `MOONUNIT_ATLASSIAN` env var (JSON: {"email","api_token"})
+
+        Example:
+        ```bash
+        ATLASSIAN_CREDS=$(node -e "const j=JSON.parse(process.env.MOONUNIT_JIRA || process.env.MOONUNIT_ATLASSIAN); console.log(j.email + ':' + j.api_token)")
+        curl -s -u "$ATLASSIAN_CREDS" \
+          "https://godaddy-corp.atlassian.net/wiki/rest/api/content/{PAGE_ID}?expand=body.storage"
+        ```
+
+        Extract content relevant to business meaning, grain, metrics, filters, SLAs, ownership.
+
+        ## Step 6: Alation lookup (if enabled)
+        If INPUT.md says Alation is enabled:
+        1. Check if `MOONUNIT_ALATION` env var is available; skip if not set.
+        2. Create API token via Alation integration API.
+        3. Search for the target table (Lake entry) and record descriptions/custom fields.
+        4. Fetch saved queries referencing the table (use Max queries from INPUT.md).
+
+        For each Alation query, record: Query ID, Title, Author, Description, SQL (verbatim).
+
+        ## Step 7: Enumerate tables and column schemas
+        For EVERY table referenced in the PySpark (read and write targets):
+        - Record table name (schema.table form)
+        - Record whether it is read, written, or both
+        - If a lake DDL exists in `repos/lake/`, read `table.ddl` and list columns with types
+        - If only in-repo DDL exists, read that instead (note it may be stale)
+        - Record any join keys used with this table
+
+        ## Step 8: Output (append to gather.md)
+        Append a structured, evidence-oriented report including:
+        - PySpark job identity (repo/ref/path), output write target(s)
+        - DAG identity (path, schedule, params)
+        - **Table inventory** — all referenced tables with read/write role and column schemas
+        - **Join conditions** — explicit join keys extracted from PySpark
+        - **Aggregation expressions** — SUM/COUNT/AVG/GROUP BY patterns found in PySpark
+        - DDL/policy/DQ files consulted
+        - Confluence summaries (if any)
+        - Alation section (table info + queries if fetched)
+        - Conflicts / discrepancies section
+
+    - name: analyze
+      model: claude-sonnet-4-6
+      skills: []
+      output: analyze.md
+      prompt: |
+        You are a Data Engineering analyst mapping a PySpark ETL job to an OSI semantic model.
+        Your job is to resolve lineage, classify tables, extract relationships and metrics,
+        and produce a structured analysis for OSI YAML generation.
+
+        Read `docs/osi-spec-reference.md` in the workspace for the OSI schema contract.
+
+        ## Step 1: Read INPUT.md and gather.md
+        - Read `INPUT.md` and `gather.md`.
+        - If INPUT.md contains USER NOTES, factor them into your analysis (expert-provided,
+          priority over Confluence/Alation text).
+
+        ## Step 2: Identify the target table
+        Determine the final output lake table populated by this PySpark job.
+        - Prefer direct evidence in code: write targets, insertInto, saveAsTable, etc.
+        - If `lake_table_override` is provided, use it only if it does not contradict code.
+        - Record grain (what one row represents) with evidence.
+
+        ## Step 3: Deep lineage resolution — MANDATORY for EVERY source table
+        For EACH table referenced in the PySpark:
+        1. Check if it exists as a lake table in `repos/lake/catalog/config/prod/`.
+           Try both `us-west-2/<schema>/<table-hyphenated>/` and
+           `dlms-api/us-west-2/<schema>/<table-hyphenated>/`.
+        2. If NOT a lake table, recursively trace upstream PySpark scripts until you reach
+           a lake table or external system.
+        3. If traversal fails: record `UNRESOLVED: <table> — <reason>`
+
+        **CRITICAL:** OSI dataset `source` values must be lake tables only (schema.table form).
+        Never use intermediate/staging tables as dataset sources.
+
+        ## Step 4: Classify datasets (fact vs dimension)
+        For each resolved lake table included in the semantic model:
+        - **Target table** = primary fact dataset (the table this PySpark populates)
+        - **Upstream tables joined TO** = dimension datasets
+        - Record classification with evidence (join direction in PySpark)
+
+        ## Step 5: Extract relationships
+        From PySpark join conditions in gather.md:
+        - Map each join to an OSI relationship: `from` (many side) → `to` (one side)
+        - Record `from_columns` and `to_columns` with matching order
+        - Name relationships descriptively (e.g., `orders_to_customers`)
+
+        ## Step 6: Map fields for each dataset
+        For each dataset, list fields from lake `table.ddl`:
+        - Column name → OSI field name (use snake_case)
+        - Scalar expression (column reference or computed scalar)
+        - `dimension.is_time: true` for date/timestamp/partition date columns
+        - Description from DDL comments, Alation, or Confluence (if available)
+        - Candidate synonyms for `ai_context` from business docs
+
+        ## Step 7: Identify metrics
+        From PySpark aggregations, Alation queries, and Confluence docs:
+        - Name each metric (snake_case)
+        - ANSI_SQL aggregate expression (may reference `dataset.column`)
+        - Description and synonyms
+        - Only include metrics with evidence — do not invent
+
+        ## Step 8: Determine semantic model metadata
+        - Model name: use `semantic_model_name` from INPUT.md if provided, else derive from
+          schema + table (e.g., `customer360_customer_life_cycle_analytics`)
+        - Model description: from Confluence, Alation, or code comments
+        - ai_context: instructions, synonyms, example questions the model answers
+
+        ## Step 9: Output (append to analyze.md)
+        Append:
+        - Target table resolution with evidence
+        - Lineage resolution table (intermediate → lake)
+        - **Dataset classification table**: | Lake Table | OSI Dataset Name | Role (fact/dim) | source | primary_key |
+        - **Relationship table**: | name | from | to | from_columns | to_columns | evidence |
+        - **Field inventory per dataset**: columns, types, is_time, descriptions
+        - **Metrics table**: | name | expression | description | evidence |
+        - **Semantic model metadata**: name, description, ai_context draft
+        - "Do not claim" list: items tempting but not proven
+
+        ## Step 10: Write RESOLVED_TARGET.json (required)
+        Create `RESOLVED_TARGET.json` in workspace root:
+        ```json
+        {
+          "schema": "customer360",
+          "table_hyphen": "customer-life-cycle-vw",
+          "table_underscore": "customer_life_cycle_vw",
+          "lake_table_path": "customer360/customer-life-cycle-vw",
+          "semantic_model_name": "customer360_customer_life_cycle_analytics",
+          "confidence": "high",
+          "evidence": ["file/line references"]
+        }
+        ```
+
+    - name: generate
+      model: claude-sonnet-4-6
+      skills: []
+      output: generate.md
+      prompt: |
+        You are generating an **OSI-compliant semantic model** YAML file for a Data Lake table.
+        Your output must be 100% accurate. Never fabricate fields, relationships, or metrics.
+
+        Read `docs/osi-spec-reference.md` for the complete schema contract.
+
+        ## Step 1: Read all prior artifacts
+        Read:
+        - `INPUT.md` — includes USER NOTES (HIGHEST PRIORITY after code) if provided
+        - `gather.md`
+        - `analyze.md`
+        - `RESOLVED_TARGET.json`
+
+        USER NOTES override Confluence/Alation — but NEVER override PySpark/DAG code.
+
+        ## Step 2: Create SEMANTIC_MODEL.yaml
+        Create `SEMANTIC_MODEL.yaml` in the workspace root with this exact structure:
+
+        ```yaml
+        version: "0.2.0.dev0"
+
+        semantic_model:
+          - name: <from analyze.md or RESOLVED_TARGET.json>
+            description: <business description>
+            ai_context:
+              instructions: <how AI should use this model>
+              synonyms: [<terms>]
+              examples: [<sample questions>]
+
+            datasets:
+              - name: <snake_case dataset name>
+                source: <schema.table>
+                primary_key: [<col(s)>]
+                unique_keys:
+                  - [<col(s)>]
+                description: <text>
+                ai_context:
+                  synonyms: [<terms>]
+                fields:
+                  - name: <field_name>
+                    expression:
+                      dialects:
+                        - dialect: ANSI_SQL
+                          expression: <scalar_sql>
+                    dimension:
+                      is_time: true|false
+                    description: <text>
+                    ai_context:
+                      synonyms: [<terms>]
+
+            relationships:
+              - name: <rel_name>
+                from: <many_side_dataset>
+                to: <one_side_dataset>
+                from_columns: [<fk_cols>]
+                to_columns: [<pk_cols>]
+
+            metrics:
+              - name: <metric_name>
+                expression:
+                  dialects:
+                    - dialect: ANSI_SQL
+                      expression: <aggregate_sql>
+                description: <text>
+                ai_context:
+                  synonyms: [<terms>]
+
+            custom_extensions:
+              - vendor_name: GODADDY
+                data: '{"lake_table_path": "<path>", "pyspark_path": "<path>", "dag_name": "<name>", "refresh_cadence": "<cadence>"}'
+        ```
+
+        ## Generation rules (non-negotiable)
+        1. Root must have `version: "0.2.0.dev0"` and `semantic_model` array
+        2. Use **ANSI_SQL** dialect only for all expressions
+        3. Field expressions are **scalar** (no SUM/COUNT/AVG)
+        4. Metric expressions use **aggregates** and may reference `dataset.column`
+        5. Dataset `source` values must be **lake tables only** (schema.table)
+        6. Include the target table AND all resolved upstream dimension tables
+        7. Every field needs `name`, `expression.dialects`, and `description` (if known)
+        8. Set `dimension.is_time: true` on date/timestamp/partition columns
+        9. Relationships must have matching column counts in from/to
+        10. Only include metrics with evidence from analyze.md
+        11. `custom_extensions.data` must be a JSON **string**, not nested YAML
+        12. Omit fields/relationships/metrics you cannot support with evidence
+
+        ## Step 3: Append summary to generate.md
+        Append:
+        - Semantic model name
+        - Dataset count (fact + dimensions)
+        - Field count per dataset
+        - Relationship count
+        - Metric count
+        - Items omitted due to insufficient evidence
+        - Key sources used
+
+    - name: validate
+      model: claude-sonnet-4-6
+      skills: []
+      output: validate.md
+      prompt: |
+        You are a strict validation agent for an OSI semantic model. Your job is to ensure
+        `SEMANTIC_MODEL.yaml` is:
+        1) structurally valid per OSI spec v0.2.0.dev0
+        2) accurate (no fabricated content)
+        3) internally consistent (relationships, names, column references)
+
+        Read `docs/osi-spec-reference.md` for the validation checklist.
+
+        ## Step 1: Read all artifacts
+        Read:
+        - `INPUT.md`
+        - `gather.md`
+        - `analyze.md`
+        - `RESOLVED_TARGET.json`
+        - `SEMANTIC_MODEL.yaml`
+
+        ## Step 2: Structural validation
+        Verify against OSI spec:
+        - Root has `version: "0.2.0.dev0"` and `semantic_model` array
+        - Each model has `name` and `datasets` (min 1)
+        - Each dataset has `name` and `source`
+        - Each field has `name` and `expression.dialects` (min 1, dialect ANSI_SQL)
+        - Each metric has `name` and `expression.dialects` (min 1)
+        - Each relationship has `name`, `from`, `to`, `from_columns`, `to_columns`
+        - `len(from_columns) == len(to_columns)` for each relationship
+        - Field expressions contain no aggregates (SUM/COUNT/AVG/MIN/MAX)
+        - Metric expressions contain aggregates
+        - All names unique within scope
+        - `custom_extensions.data` values are valid JSON strings
+
+        Fix any structural issues in-place in `SEMANTIC_MODEL.yaml`.
+
+        ## Step 3: Reference validation
+        - Relationship `from`/`to` must reference existing dataset names
+        - Relationship columns should exist as fields in the respective datasets
+        - Dataset sources must be lake tables (not intermediate/staging tables)
+        - Primary keys should exist as fields in the dataset
+
+        ## Step 4: Accuracy validation
+        For each dataset, field, relationship, and metric:
+        - Identify evidence source (PySpark line, DDL, analyze.md)
+        - Remove or fix any entry without evidence
+        - Ensure descriptions match source material (not invented)
+
+        ## Step 5: Completeness check
+        - Target table must be present as a dataset
+        - Key dimension tables from analyze.md should be included (or noted as omitted)
+        - Time dimensions should have `is_time: true`
+        - At least one metric if analyze.md identified any
+
+        ## Step 6: Append report to validate.md
+        Append:
+        - Semantic model name
+        - PASS/FAIL for structural, reference, and accuracy validation
+        - Issues found and how they were fixed
+        - Items removed due to lack of evidence
+        - Final counts: datasets, fields, relationships, metrics
