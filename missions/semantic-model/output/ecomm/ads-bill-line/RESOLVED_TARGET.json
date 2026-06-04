@@ -1,0 +1,16 @@
+{
+  "schema": "analytic",
+  "table_hyphen": "ads-bill-line",
+  "table_underscore": "ads_bill_line",
+  "lake_table_path": "analytic/ads-bill-line",
+  "semantic_model_name": "analytic_ads_bill_line",
+  "confidence": "high",
+  "evidence": [
+    "repos/lake/catalog/config/prod/us-west-2/analytic/ads-bill-line/table.ddl — 200-column Hive DDL confirmed",
+    "repos/lake/catalog/config/prod/us-west-2/analytic/ads-bill-line/table.yaml — sloIdentifier: analytic.ads_bill_line; partition_key: partition_bill_mst_year_month",
+    "ecomm/analytic-bill-line/src/pyspark/ads_bill_line.py — DATABASE_NAME='analytic_local', TABLE_NAME='ads_bill_line'",
+    "ecomm/analytic-bill-line/src/dag/analytic_bill_line_dag.py — S3 write target: s3://gd-ckpetlbatch-prod-analytic/analytic/ads_bill_line/",
+    "ecomm/analytic-bill-line/src/data_quality/constraints/ads_bill_line.json — isPrimaryKey(bill_id, bill_line_num)",
+    "Alation ID 6242622 — key: AwsDataCatalog.analytic.ads_bill_line confirmed"
+  ]
+}

@@ -282,7 +282,8 @@ rm -f "$MU_LOG"
 rm -rf "$WORKSPACE_DIR"
 rm -f "$OUTPUT_DIR"/{INPUT,gather,analyze,generate,validate}.md \
       "$OUTPUT_DIR"/RESOLVED_TARGET.json \
-      "$OUTPUT_DIR"/*-metadata.md
+      "$OUTPUT_DIR"/*-metadata.md \
+      "$OUTPUT_DIR"/run.log
 mkdir -p "$WORKSPACE_DIR"
 
 cleanup() {

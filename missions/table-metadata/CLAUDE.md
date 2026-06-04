@@ -19,13 +19,14 @@ be used **only when consistent** with the code.
 - **PySpark + DAG are the source of truth.** If DDL/policies/Alation/Confluence
   contradict the PySpark or DAG, treat the code as correct and flag the
   discrepancy in validation.
-- **Always traverse to the lake table — recursively.** If the PySpark
-  references local/intermediate Athena tables (e.g., `*_stg`, `*_conformed.*`,
-  `*_driver`), you MUST find the PySpark script that builds that intermediate
-  table, read it, discover ITS sources, and continue upstream until you reach
-  an actual lake table (one that exists in `gdcorp-dna/lake`). If traversal
-  fails, mark it `UNRESOLVED — requires manual input`. Never list intermediate
-  tables as column sources in C1.
+- **Traverse to the FIRST lake table — then stop.** If the PySpark
+  references local/intermediate tables (e.g., `*_stg`, `*_conformed.*`,
+  `*_driver`), trace upstream until you reach a lake table (one that exists
+  in `gdcorp-dna/lake`). Once you hit a lake table, STOP — do not trace
+  into that lake table's own upstream sources. The lineage boundary is the
+  first lake table encountered. If traversal fails, mark it
+  `UNRESOLVED — requires manual input`. Never list intermediate tables OR
+  a lake table's own upstream sources as column sources in C1.
 - **User notes in config** (`notes: |` in YAML) are highest priority after code.
   Fold them into A2, C4, C7, B1, etc. They override Confluence/Alation text.
 - **Never guess.** If a section cannot be populated with high confidence, mark

@@ -222,8 +222,9 @@ plan:
            Try both `us-west-2/<schema>/<table-hyphenated>/` and `dlms-api/us-west-2/<schema>/<table-hyphenated>/`.
            Convert underscores to hyphens when searching lake paths.
 
-        2. **If it IS a lake table** -> record it as the authoritative source. Read its `table.yaml`
-           and `table.ddl`. Done for this table.
+        2. **If it IS a lake table** -> STOP. Record it as the authoritative source. Read its
+           `table.yaml` and `table.ddl`. Do NOT traverse further into that lake table's own
+           upstream sources. The lineage for THIS table ends at its first upstream lake table.
 
         3. **If it is NOT a lake table** (local/intermediate) — you MUST trace upstream:
            a. Search the source repo for the PySpark script that BUILDS this intermediate table.
@@ -233,26 +234,37 @@ plan:
            c. Identify what tables IT reads from.
            d. For each of THOSE tables, repeat from step 1 (recursive traversal).
            e. Continue until you reach a lake table or an external system (S3 direct read, API, etc.).
+           f. **STOP as soon as you reach a lake table.** Do NOT traverse into a lake table's
+              own sources. A lake table is a boundary — it is the authoritative source.
 
         4. **If traversal fails** (cannot find the upstream script, or it reads from an unknown source):
            Record: `UNRESOLVED: <table_name> — <what you searched and why it failed>`
 
         **CRITICAL RULE FOR C1 (Column Reference):**
-        The "Source Table(s)" column in C1 must show the FINAL lake table (or external system),
-        NOT intermediate/local tables. For example:
-        - BAD:  `customer_core_conformed.active_customer_stg`  (this is an intermediate table)
-        - GOOD: `enterprise.dim_subscription` (this is the lake table that feeds active_customer_stg)
+        The "Source Table(s)" column in C1 must show the FIRST lake table encountered in the
+        lineage chain — NOT the lake table's own upstream sources. For example, if the PySpark
+        reads from `customer_core_conformed.customer_life_cycle` which resolves to lake table
+        `customer360.customer_life_cycle_vw`, then ALL columns sourced from it must show
+        `customer360.customer_life_cycle_vw` — NOT the tables that feed customer_life_cycle_vw.
+        - BAD:  `enterprise.dim_subscription` (this is a source of the UPSTREAM lake table, not this table)
+        - BAD:  `customer_core_conformed.active_customer_stg` (this is an intermediate table)
+        - GOOD: `customer360.customer_life_cycle_vw` (the first lake table in the chain)
         - GOOD: `UNRESOLVED — requires manual input` (if traversal failed)
 
-        If a column aggregates data from multiple lake sources through an intermediate table,
-        list all the lake sources that contribute.
+        Only trace THROUGH a lake table if the PySpark directly reads from multiple tables and
+        one of those is NOT a lake table. In that case, trace only the non-lake sources.
 
-        ## Step 4: Read lake registry artifacts for ALL resolved upstream tables
-        For EACH lake table discovered during lineage traversal (not just the target), read:
+        ## Step 4: Read lake registry artifacts for the direct upstream lake tables
+        For EACH lake table that is a DIRECT source of the target (i.e., the first lake table
+        reached during traversal — not deeper ancestors), read:
         - `table.ddl` — authoritative schema with column names and types
         - `table.yaml` — lineage metadata, consumer groups, SLA info
 
-        Build a column-level mapping: `target_column -> intermediate_table.column -> lake_table.column`
+        Also read the target table's own lake registry artifacts (table.ddl, table.yaml).
+
+        Build a column-level mapping: `target_column -> source_lake_table.column`
+        (If intermediates exist between the target and the lake source, note the chain but
+        the final C1 mapping must reference only the first lake table reached.)
 
         ## Step 5: Derive analysis outputs (no guessing)
         Derive the following, strictly from code + resolved lake artifacts:
@@ -262,18 +274,19 @@ plan:
         - Always-on filters embedded in ETL (non-overridable scope restrictions)
         - Common business metrics computed in the ETL (name + definition + grain)
         - **Column-level lineage** (CRITICAL): for EACH column in the target table, trace it
-          to its ultimate lake source table and column. If the column is computed/derived,
-          note the formula AND the lake source columns feeding it. If lineage cannot be
-          fully resolved after recursive traversal, mark it as UNRESOLVED.
+          to the FIRST upstream lake table and column. Do NOT trace further into that lake
+          table's own sources. If the column is computed/derived, note the formula AND the
+          direct lake source columns feeding it. If lineage cannot be resolved, mark as UNRESOLVED.
         - SLA/refresh schedule from the DAG (cron, dependencies, expected latency)
 
         ## Step 6: Output (append to analyze.md)
         Append:
         - Target table resolution (with evidence and any overrides)
-        - **Full lineage resolution table** showing for each intermediate table:
-          | Intermediate Table | Resolved To (Lake Table) | Resolution Method |
+        - **Lineage resolution table** showing for each source table referenced in code:
+          | Source Table (from code) | Resolved To (First Lake Table) | Resolution Method |
           Include UNRESOLVED entries with explanation of what was searched.
-        - Column-level lineage mapping (target_column -> lake_table.column) for all columns
+          Do NOT list a lake table's own upstream sources — stop at the lake boundary.
+        - Column-level lineage mapping (target_column -> first_lake_table.column) for all columns
         - A structured "facts" block for each of the 20 sections (A1..E3) listing
           what can be filled and what is missing
         - A "Do not claim" list: items that are tempting but not proven
@@ -386,13 +399,15 @@ plan:
 
              If Alation was skipped or no queries were found, omit the Alation Queries part.
         - C1 should be a single readable schema table with a "Source Table(s)" column.
-          **CRITICAL C1 RULE**: The "Source Table(s)" column must ONLY contain:
-            - Lake tables (e.g., `enterprise.dim_subscription`) — the ultimate authoritative source
-            - External systems (e.g., "S3 direct read")
-            - `UNRESOLVED - requires manual input` if analyze.md marked it unresolved
+          **CRITICAL C1 RULE**: The "Source Table(s)" column must show the FIRST upstream
+          lake table in the lineage chain — NOT that lake table's own sources. For example:
+            - If PySpark reads from an intermediate that resolves to lake table X, show X.
+            - If PySpark reads directly from lake table X, show X.
+            - Do NOT trace into X's own upstream sources and list those instead.
+            - External systems (e.g., "S3 direct read") are also acceptable.
+            - `UNRESOLVED - requires manual input` if analyze.md marked it unresolved.
           NEVER list intermediate/local/staging tables (e.g., `*_stg`, `*_conformed.*`,
-          `*_driver`) as sources. These are implementation details. Use the column-level
-          lineage mapping from analyze.md to find the lake table behind each intermediate table.
+          `*_driver`) as sources. These are implementation details.
         - C8 should include 2-5 short, annotated query patterns (avoid huge queries; keep focused).
         - D2 should identify repo + file paths + orchestration tool + compute platform.
         - D4 should summarize creation logic (no long code walk-through).
@@ -433,6 +448,11 @@ plan:
         - Identify the exact evidence source (PySpark line, DAG setting, lake table.yaml, etc.)
         - If evidence is missing or contradictory, rewrite the metadata doc to remove or soften the claim.
         - If a claim cannot be validated, replace it with a REQUIRES_MANUAL_INPUT marker.
+
+        **DO NOT modify A1's Redshift Serverless Dev fields.** The A1 section intentionally shows
+        the Redshift Dev Serverless entry (Database = "Redshift - Serverless - Dev", Alation URL
+        pointing to the dev.* table) as the primary access identity. This is BY DESIGN — do not
+        change it to "AWS Data Catalog" or any other value.
 
         ## Step 2b: C1 Source Table validation (CRITICAL)
         Scan the C1 "Source Table(s)" column in TABLE_METADATA.md. For EACH entry:
