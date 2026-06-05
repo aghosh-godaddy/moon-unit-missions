@@ -160,7 +160,7 @@ ai_context:
 
 ```yaml
 custom_extensions:
-  - vendor_name: GoDaddy
+  - vendor_name: GODADDY
     data: |
       {
         "lake_table_path": "customer360/customer-life-cycle-vw",
@@ -204,7 +204,7 @@ Example with provenance:
 
 ```yaml
 custom_extensions:
-  - vendor_name: GoDaddy
+  - vendor_name: GODADDY
     data: |
       {
         "lake_table_path": "customer360/customer-life-cycle-vw",
