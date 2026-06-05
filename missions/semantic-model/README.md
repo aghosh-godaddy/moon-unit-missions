@@ -56,7 +56,8 @@ Results are saved to `output/<identifier>/<name>/`:
 | `analyze.md` | Stage 2 — lineage resolution + OSI concept mapping |
 | `generate.md` | Stage 3 — generation summary |
 | `validate.md` | Stage 4 — validation report |
-| `<schema>.<table>-osi-model.yaml` | Final OSI semantic model (authoritative deliverable) |
+| `<schema>.<table>.yaml` | Final OSI semantic model (authoritative deliverable) |
+| `.workspace/repos/<repo>/<...>/src/semantics/<schema>.<table>.yaml` | Same model placed in source repo layout (workspace preserved on success) |
 
 Stage `.md` files follow the Moon Units convention: the framework pre-writes a
 header, the agent appends its content, the framework appends a footer.

@@ -126,4 +126,5 @@ Outputs appear under `output/<identifier>/<name>/`.
 | `analyze.md` | Stage 2 lineage + OSI concept mapping |
 | `generate.md` | Stage 3 summary |
 | `validate.md` | Stage 4 validation report |
-| `<schema>.<table>-osi-model.yaml` | Final OSI semantic model (deliverable) |
+| `<schema>.<table>.yaml` | Final OSI semantic model (deliverable) |
+| `.workspace/repos/<repo>/<...>/src/semantics/<schema>.<table>.yaml` | Same model placed in source repo `src/semantics/` (workspace preserved on success) |

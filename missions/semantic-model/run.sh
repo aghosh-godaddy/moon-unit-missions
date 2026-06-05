@@ -13,7 +13,8 @@
 #     generate.md
 #     validate.md
 #     RESOLVED_TARGET.json
-#     <schema>.<table>-osi-model.yaml
+#     <schema>.<table>.yaml
+#     .workspace/repos/<repo>/<...>/src/semantics/<schema>.<table>.yaml
 #
 set -euo pipefail
 
@@ -282,7 +283,8 @@ rm -f "$MU_LOG"
 rm -rf "$WORKSPACE_DIR"
 rm -f "$OUTPUT_DIR"/{INPUT,gather,analyze,generate,validate}.md \
       "$OUTPUT_DIR"/RESOLVED_TARGET.json \
-      "$OUTPUT_DIR"/*-osi-model.yaml
+      "$OUTPUT_DIR"/*-osi-model.yaml \
+      "$OUTPUT_DIR"/*.yaml
 mkdir -p "$WORKSPACE_DIR/docs"
 cp "$SCRIPT_DIR/docs/osi-spec-reference.md" "$WORKSPACE_DIR/docs/osi-spec-reference.md"
 
@@ -382,19 +384,32 @@ resolve_output_filename() {
     schema=$(node -e "const j=require('$resolved'); console.log(j.schema||'');" 2>/dev/null || true)
     table_u=$(node -e "const j=require('$resolved'); console.log(j.table_underscore||'');" 2>/dev/null || true)
     if [[ -n "$schema" && -n "$table_u" ]]; then
-      echo "${schema}.${table_u}-osi-model.yaml"
+      echo "${schema}.${table_u}.yaml"
       return
     fi
   fi
-  echo "unknown.unknown-osi-model.yaml"
+  echo "unknown.unknown.yaml"
+}
+
+copy_semantic_model_to_repo() {
+  local out_name="$1"
+  local src_parent semantics_dir
+  # SOURCE_PATH is <domain>/<project>/src/pyspark/<file>.py
+  src_parent=$(dirname "$(dirname "$SOURCE_PATH")")
+  semantics_dir="$WORKSPACE_DIR/repos/$SOURCE_REPO/$src_parent/semantics"
+  mkdir -p "$semantics_dir"
+  cp "$WORKSPACE_DIR/SEMANTIC_MODEL.yaml" "$semantics_dir/$out_name"
+  echo "$semantics_dir/$out_name"
 }
 
 if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
   copy_stage_outputs
 
+  SEMANTICS_PATH=""
   if [[ -f "$WORKSPACE_DIR/SEMANTIC_MODEL.yaml" ]]; then
     OUT_NAME=$(resolve_output_filename)
     cp "$WORKSPACE_DIR/SEMANTIC_MODEL.yaml" "$OUTPUT_DIR/$OUT_NAME"
+    SEMANTICS_PATH=$(copy_semantic_model_to_repo "$OUT_NAME")
   fi
 
   kill "$MU_PID" 2>/dev/null || true
@@ -405,12 +420,6 @@ if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
   fi
   wait "$MU_PID" 2>/dev/null || true
 
-  rm -rf "$WORKSPACE_DIR" 2>/dev/null || true
-  if [[ -d "$WORKSPACE_DIR" ]]; then
-    sleep 2
-    rm -rf "$WORKSPACE_DIR" 2>/dev/null || true
-  fi
-
   osascript -e "display notification \"Output ready in output/\" with title \"Moon Unit Complete ✓\"" 2>/dev/null || true
   printf "\a"
   MISSION_ID=$(grep -o "lmsn_[A-Z0-9]*" "$MU_LOG" | head -1 || true)
@@ -419,6 +428,10 @@ if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
   echo " ✓ MISSION SUCCEEDED ${MISSION_ID:+($MISSION_ID)}"
   echo " Target: ${IDENTIFIER}/${NAME}"
   echo " Output: $OUTPUT_DIR/"
+  if [[ -n "$SEMANTICS_PATH" ]]; then
+    echo " Semantics: $SEMANTICS_PATH"
+    echo " Workspace: $WORKSPACE_DIR (preserved)"
+  fi
   echo "═══════════════════════════════════════════════════"
   exit 0
 fi

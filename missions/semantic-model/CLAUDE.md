@@ -39,7 +39,9 @@ be used **only when consistent** with the code.
 ## OSI output contract
 
 The final deliverable is `SEMANTIC_MODEL.yaml` in the workspace root, copied by
-`run.sh` to `output/<id>/<name>/<schema>.<table>-osi-model.yaml`.
+`run.sh` to:
+- `output/<id>/<name>/<schema>.<table>.yaml` (audit trail)
+- `repos/<source-repo>/<...>/src/semantics/<schema>.<table>.yaml` (source repo placement, workspace preserved on success)
 
 Structure reference: `docs/osi-spec-reference.md`
 
@@ -67,7 +69,8 @@ semantic_model:
 - `plan.stages[].output` in `manifest.yaml` is a **markdown file**; the framework
   pre-writes a header, the agent appends content, the framework appends a footer.
 - The final OSI deliverable is written into the workspace as `SEMANTIC_MODEL.yaml`
-  and copied out by `run.sh`.
+  and copied out by `run.sh` to the output directory and into `src/semantics/`
+  alongside `dag/` and `pyspark/` in the cloned source repo.
 
 ## Adding/updating configs
 
