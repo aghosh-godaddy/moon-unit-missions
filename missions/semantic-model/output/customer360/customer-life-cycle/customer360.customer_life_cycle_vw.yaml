@@ -1,0 +1,1262 @@
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: customer360_customer_life_cycle_analytics
+    description: >
+      Single source of truth for customer lifecycle state and history within the Customer360 domain.
+      Captures daily snapshots of customer status from acquisition through churn, reactivation, and
+      merge events. Includes TTM GCR revenue, active subscription product breadth, geographic
+      acquisition context, reseller classification, and fraud indicators. Primary OSI and OWL target
+      for Customer360 (Confluence page 4387965088). Replaces lifecycle logic previously spread
+      across multiple marts. Data tier 4; one row per shopper per evaluation date.
+    ai_context:
+      instructions: >
+        This model tracks daily customer lifecycle states for the Customer360 domain.
+        ALWAYS filter by partition_eval_mst_date for point-in-time queries — omitting this
+        filter produces a full historical scan across all partitions.
+        The composite primary key is (shopper_id, partition_eval_mst_date); customer_id may be
+        null for some historical records and is NOT unique alone.
+        Array fields (active_paid_subscription_list, product_pnl_category_list,
+        product_pnl_line_list, ttm_all_bill_list, brand_name_list) are array<string> columns
+        and CANNOT be used in standard SQL aggregate expressions (SUM, COUNT, AVG); use
+        product_pnl_category_qty (scalar COUNT DISTINCT proxy) and ttm_gcr_usd_amt (scalar
+        SUM proxy) instead.
+        Do NOT attempt to join directly to analytic_feature.customer_type_history;
+        customer_type_name and customer_type_reason_desc are fully denormalized on the fact
+        via a SCD2 time-filtered join that cannot be expressed as a simple FK.
+        Do NOT attempt to join directly to dp_enterprise.dim_reseller; reseller_type_id and
+        reseller_type_name are denormalized via a join chain through
+        customer360.dim_customer_history_vw (SCD2 intermediate) on private_label_id, which is
+        not preserved on the fact table.
+        Do NOT attempt to join directly to analytic_feature.customer_fraud; customer_fraud_flag
+        and customer_fraud_mst_date are fully denormalized boolean/date columns on the fact
+        (analytic_feature.customer_fraud is excluded as an OSI dimension due to M:M cardinality).
+        Do NOT attempt to join directly to analytic_feature.shopper_merge; customer_merge_mst_date
+        is fully denormalized on the fact via a SCD2 date-range join without a clean FK.
+        When joining to dim_bill_line_purchase_attribution, filter to the latest bill_line_num
+        per bill_id (ROW_NUMBER() OVER (PARTITION BY bill_id ORDER BY bill_line_num DESC) = 1)
+        to avoid fan-out.
+        When joining to dim_bill_fraud_history, filter current_record_flag = true to avoid
+        SCD2 fan-out.
+        When joining to shopper_acquisition, align partition_eval_mst_date on the fact with
+        evaluation_mst_date on the dimension for correct point-in-time matching.
+      synonyms:
+        - "customer lifecycle"
+        - "customer life cycle"
+        - "customer state"
+        - "customer status"
+        - "active customers"
+        - "churned customers"
+        - "customer 360"
+        - "C360 lifecycle"
+        - "customer journey"
+        - "lifecycle states"
+        - "customer snapshot"
+      examples:
+        - "How many active customers do we have today?"
+        - "What is total TTM GCR for US domestic customers?"
+        - "Show customer acquisition channel breakdown this month"
+        - "What percentage of customers are in each lifecycle state (active, churned, reactivated)?"
+        - "How many customers were acquired vs churned last quarter?"
+        - "What is the average product category count per active customer?"
+        - "Show TTM GCR by reseller type"
+        - "Which countries have the highest customer acquisition rate?"
+        - "How long is the average customer tenure in years?"
+
+    datasets:
+      - name: customer_life_cycle
+        source: customer360.customer_life_cycle_vw
+        primary_key: [shopper_id, partition_eval_mst_date]
+        unique_keys:
+          - [shopper_id, partition_eval_mst_date]
+        description: >
+          Daily partitioned snapshot of customer lifecycle state and attributes for all GoDaddy
+          customers (active and churned). One row per shopper per partition_eval_mst_date.
+          Central fact dataset for Customer360 lifecycle analytics (Alation ID 7038345).
+          ALWAYS apply a partition_eval_mst_date filter for point-in-time queries; omitting it
+          causes a full historical scan. PK confirmed by DQ constraint
+          isPrimaryKey(partition_eval_mst_date, shopper_id).
+        ai_context:
+          synonyms:
+            - "customer lifecycle fact"
+            - "customer snapshot"
+            - "customer daily status"
+        fields:
+          - name: shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: shopper_id
+            description: >
+              Unique numeric ID for the GoDaddy shopper profile used in eCommerce transactions.
+              Component of composite primary key (shopper_id, partition_eval_mst_date).
+
+          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+            description: >
+              Unique UUID representing the customer entity across GoDaddy systems. NOT unique
+              alone; may be null for some historical records. Use shopper_id as the reliable PK
+              component. Composite PK is (shopper_id, partition_eval_mst_date).
+
+          - name: customer_acquisition_bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_bill_id
+            description: >
+              Bill ID that triggered first net positive status for this customer. FK to
+              ecomm_mart.dim_bill_line_purchase_attribution.bill_id and
+              finance360.dim_bill_fraud_history_vw.bill_id. Derived from
+              enterprise.dim_new_acquisition_shopper via acquisition derivation chain;
+              not directly re-joinable to enterprise.dim_new_acquisition_shopper without
+              replicating the acquisition bill selection logic.
+
+          - name: customer_acquisition_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_mst_date
+            dimension:
+              is_time: true
+            description: >
+              Date of the bill that triggered first net positive status for this customer (MST).
+              Derived from enterprise.dim_new_acquisition_shopper via acquisition derivation
+              chain; not directly re-joinable to enterprise.dim_new_acquisition_shopper.
+
+          - name: customer_acquisition_mst_month
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_mst_month
+            description: >
+              Month of customer acquisition (MST), truncated to first day of month (YYYY-MM-01).
+              Derived: TRUNC(customer_acquisition_mst_date, 'MONTH').
+
+          - name: customer_acquisition_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_country_code
+            description: >
+              Country code where the customer was acquired. FK to
+              finance360.dim_country_vw.country_code (join with current_record_flag = true).
+              Note: 'UK' is normalized to 'GB' by the PySpark ETL before writing to this table.
+
+          - name: customer_acquisition_channel_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_channel_name
+            description: >
+              Channel through which the customer was acquired (e.g., organic, paid, referral).
+              Derived from ecomm_mart.bill_line_traffic_ext via customer360/customer-metrics
+              PySpark join #6 (complex time-filter: bill_modified_mst_date <= eval AND
+              new_acquisition_bill_mst_date = bill_modified_mst_date AND bill_id =
+              new_acquisition_bill_id); not directly joinable to ecomm_mart.bill_line_traffic_ext.
+              For pre-2022-08 history, sourced from legacy hardcoded prod S3 path
+              s3://gd-ckpetlbatch-prod-analytic/analytic/ads_bill_line_ext/ (code defect:
+              not environment-parameterized).
+
+          - name: customer_tenure_year_count
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_tenure_year_count
+            description: >
+              Tenure of the customer in whole years as of partition_eval_mst_date. Derived:
+              CAST(DATEDIFF(partition_eval_mst_date, customer_acquisition_mst_date) / 365 AS INT).
+
+          - name: customer_acquisition_country_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_country_name
+            description: >
+              Country name where the customer was acquired. Denormalized from
+              finance360.dim_country_vw.country_name.
+
+          - name: customer_region_1_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_region_1_name
+            description: >
+              Geographic reporting region hierarchy level 1 for the customer's acquisition country.
+              Denormalized from finance360.dim_country_vw.report_region_1_name.
+
+          - name: customer_region_2_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_region_2_name
+            description: >
+              Geographic reporting region hierarchy level 2 for the customer's acquisition country.
+              Denormalized from finance360.dim_country_vw.report_region_2_name.
+
+          - name: customer_region_3_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_region_3_name
+            description: >
+              Geographic reporting region hierarchy level 3 for the customer's acquisition country.
+              Denormalized from finance360.dim_country_vw.report_region_3_name.
+
+          - name: customer_domestic_international_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_domestic_international_name
+            description: >
+              Whether the customer is domestic or international. Denormalized from
+              finance360.dim_country_vw.domestic_international_ind.
+
+          - name: reseller_type_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_type_id
+            description: >
+              Type ID of the reseller organization associated with this customer. Derived from
+              dp_enterprise.dim_reseller via customer360.dim_customer_history_vw.private_label_id
+              join chain; not directly joinable (private_label_id is not preserved on the fact).
+              NOTE: The @ForeignKey DDL comment on this field is misleading — reseller_type_id
+              is NOT the PK of dp_enterprise.dim_reseller; the actual PK is private_label_id.
+
+          - name: reseller_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_type_name
+            description: >
+              Name of the reseller organization associated with this customer. Derived from
+              dp_enterprise.dim_reseller via customer360.dim_customer_history_vw.private_label_id
+              join chain; not directly joinable (private_label_id not on fact).
+
+          - name: customer_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_type_name
+            description: >
+              Customer type classification label as of the evaluation date (e.g., SMB,
+              enterprise). Derived from analytic_feature.customer_type_history via SCD2
+              time-filtered join on shopper_id (record_start_mst_date <= eval_date <=
+              record_end_mst_date); not directly re-joinable without the eval date context.
+              analytic_feature.customer_type_history is not included as an OSI dataset.
+
+          - name: customer_type_reason_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_type_reason_desc
+            description: >
+              Reason or classification description for the customer type label. Derived from
+              analytic_feature.customer_type_history via SCD2 time-filtered join on shopper_id;
+              not directly re-joinable without eval date context.
+              analytic_feature.customer_type_history is not included as an OSI dataset.
+
+          - name: customer_fraud_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_fraud_flag
+            description: >
+              True if the customer is flagged as fraud at the evaluation date. Derived from
+              analytic_feature.customer_fraud via M:M join on (shopper_id, customer_id).
+              analytic_feature.customer_fraud is excluded as an OSI dimension due to M:M
+              cardinality (multiple fraud_review_id records per shopper/customer pair without
+              dedup guarantee); use this denormalized flag instead of joining
+              analytic_feature.customer_fraud directly.
+
+          - name: active_paid_subscription_list
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: active_paid_subscription_list
+            description: >
+              Array of active paid subscription IDs for this customer as of evaluation date.
+              Type: array<string>. ARRAY FIELD — cannot be used in standard SQL aggregate
+              expressions (SUM, COUNT, AVG); use product_pnl_category_qty as scalar proxy
+              for subscription breadth metrics. Derived from enterprise.dim_subscription_history
+              via customer_core_conformed.customer_active_subscription_detail_driver intermediate
+              driver; not directly joinable to enterprise.dim_subscription_history.
+
+          - name: product_pnl_category_list
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_category_list
+            description: >
+              Array of distinct product PNL category names owned by this customer as of
+              evaluation date. Type: array<string>. ARRAY FIELD — cannot be used in standard
+              SQL aggregate expressions; use product_pnl_category_qty as scalar proxy. Derived
+              from enterprise.dim_subscription_history via
+              customer_core_conformed.customer_active_subscription_detail_driver intermediate
+              driver; not directly joinable.
+
+          - name: product_pnl_category_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_category_qty
+            description: >
+              Number of distinct product PNL categories owned by this customer as of evaluation
+              date. Scalar proxy for subscription breadth; use this field for product breadth
+              aggregations instead of array fields. Derived as COUNT(DISTINCT product_pnl_category)
+              from enterprise.dim_subscription_history via
+              customer_core_conformed.customer_active_subscription_detail_driver intermediate
+              driver; not directly joinable to enterprise.dim_subscription_history.
+            ai_context:
+              synonyms:
+                - "product breadth"
+                - "number of product categories"
+                - "category count"
+
+          - name: product_pnl_line_list
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_line_list
+            description: >
+              Array of product PNL line names owned by this customer as of evaluation date.
+              Type: array<string>. ARRAY FIELD — cannot be used in standard SQL aggregate
+              expressions; use product_pnl_category_qty as scalar proxy. Derived from
+              enterprise.dim_subscription_history via
+              customer_core_conformed.customer_active_subscription_detail_driver intermediate
+              driver; not directly joinable.
+
+          - name: ttm_all_bill_list
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ttm_all_bill_list
+            description: >
+              Array of all net-positive bill IDs from the trailing twelve months (TTM) for this
+              customer. Type: array<string>. ARRAY FIELD — cannot be used in standard SQL
+              aggregate expressions; use ttm_gcr_usd_amt as scalar proxy for TTM revenue
+              metrics.
+
+          - name: brand_name_list
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: brand_name_list
+            description: >
+              Array of all brand names associated with this customer during the TTM period.
+              Type: array<string>. ARRAY FIELD — cannot be used in standard SQL aggregate
+              expressions; use product_pnl_category_qty as scalar proxy.
+
+          - name: ttm_gcr_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ttm_gcr_usd_amt
+            description: >
+              Total gross cash received (GCR) in USD across the trailing twelve months for this
+              customer. Derived as SUM(ttm_total_gcr_usd_amt) from
+              customer_core_conformed.customer_ttm_payment_driver (intermediate driver; filter:
+              trxn_currency_code <> 'N/A' AND net_positive_ttm_payment_flag = true).
+              Use this scalar field for TTM revenue aggregations instead of ttm_all_bill_list.
+            ai_context:
+              synonyms:
+                - "TTM GCR"
+                - "trailing twelve month revenue"
+                - "last 12 months revenue"
+
+          - name: customer_churn_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_churn_mst_date
+            dimension:
+              is_time: true
+            description: >
+              MST date when this customer most recently churned. Null if the customer has never
+              churned or is currently active at the evaluation date.
+
+          - name: customer_reactivate_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_reactivate_mst_date
+            dimension:
+              is_time: true
+            description: >
+              MST date when this customer was most recently reactivated after a churn event.
+              Set to partition_eval_mst_date for customers with status 'new' whose acquisition
+              date precedes the evaluation date (ETL derivation logic).
+
+          - name: customer_merge_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_merge_mst_date
+            dimension:
+              is_time: true
+            description: >
+              MST date when this customer account was merged into another account. Derived from
+              analytic_feature.shopper_merge via SCD2 date-range join on shopper_id
+              (shopper_merge_start_mst_date <= eval <= shopper_merge_end_mst_date); not directly
+              re-joinable to analytic_feature.shopper_merge without the eval date context.
+              analytic_feature.shopper_merge is not included as an OSI dataset.
+
+          - name: customer_fraud_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_fraud_mst_date
+            dimension:
+              is_time: true
+            description: >
+              MST date when a fraud flag was first set on this customer. Derived from
+              analytic_feature.customer_fraud via M:M join; analytic_feature.customer_fraud is
+              excluded as an OSI dimension (M:M cardinality on shopper_id, customer_id). Use
+              the denormalized customer_fraud_flag and this date field instead of joining
+              analytic_feature.customer_fraud directly.
+
+          - name: customer_state_enum
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_state_enum
+            description: >
+              Customer lifecycle state as of the evaluation date. Possible values: active,
+              churned, merged, reactivated, new, intraday.
+            ai_context:
+              synonyms:
+                - "customer status"
+                - "lifecycle state"
+                - "churn state"
+
+          - name: active_status_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: active_status_flag
+            description: >
+              True if this customer is currently active at the evaluation date
+              (customer_state_enum IN ('active', 'reactivated', 'new', 'intraday')).
+            ai_context:
+              synonyms:
+                - "is active"
+                - "active customer indicator"
+
+          - name: point_of_purchase_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: point_of_purchase_name
+            description: >
+              Point of purchase name from the customer acquisition bill. Denormalized from
+              ecomm_mart.dim_bill_line_purchase_attribution.point_of_purchase_name via
+              customer_acquisition_bill_id (latest bill_line_num per bill_id).
+
+          - name: customer_acquisition_bill_fraud_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_bill_fraud_flag
+            description: >
+              True if the customer's acquisition bill has a fraud record in
+              finance360.dim_bill_fraud_history_vw. Denormalized from the
+              dim_bill_fraud_history join on customer_acquisition_bill_id (SELECT DISTINCT
+              bill_id used in PySpark to avoid SCD2 fan-out).
+
+          - name: etl_build_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_build_mst_ts
+            dimension:
+              is_time: true
+            description: >
+              Timestamp (MST) when this record was built by the ETL system
+              (customer_life_cycle.py on EMR Serverless, DAG customer-life-cycle).
+
+          - name: partition_eval_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: partition_eval_mst_date
+            dimension:
+              is_time: true
+            description: >
+              PARTITION KEY: The data collection end date (MST) stored as a string. All facts
+              in this row represent the customer's state as of the end of this day. REQUIRED
+              filter for all point-in-time queries; omitting this filter causes a full
+              historical scan across all partitions.
+            ai_context:
+              synonyms:
+                - "eval date"
+                - "evaluation date"
+                - "snapshot date"
+                - "as-of date"
+
+      - name: shopper_acquisition
+        source: analytic_feature.shopper_acquisition
+        primary_key: [shopper_id]
+        unique_keys:
+          - [shopper_id]
+        description: >
+          GoDaddy shopper acquisition records. Tracks the first acquisition event per shopper
+          including acquisition bill, channel, country, and product details. Partitioned by
+          evaluation_mst_date. Join to customer_life_cycle on shopper_id, aligning
+          partition_eval_mst_date (fact) with evaluation_mst_date (dimension) for correct
+          point-in-time matching.
+        ai_context:
+          synonyms:
+            - "acquisition data"
+            - "shopper acquisition"
+            - "first purchase"
+        fields:
+          - name: shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: shopper_id
+            description: GoDaddy shopper profile identifier. Primary key within a partition.
+
+          - name: evaluation_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: evaluation_mst_date
+            dimension:
+              is_time: true
+            description: >
+              Date this acquisition record was evaluated (MST). Partition key for this table.
+              Align with customer_life_cycle.partition_eval_mst_date for point-in-time joins.
+
+          - name: acq_bill_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_bill_mst_date
+            dimension:
+              is_time: true
+            description: Date of the customer acquisition bill (MST).
+
+          - name: acq_bill_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_bill_mst_ts
+            dimension:
+              is_time: true
+            description: Timestamp of the customer acquisition bill (MST).
+
+          - name: acq_bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_bill_id
+            description: Acquisition bill identifier.
+
+          - name: acq_isc_source_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_isc_source_code
+            description: ISC (Internal Source Code) for customer acquisition.
+
+          - name: acq_isc_channel_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_isc_channel_name
+            description: ISC channel name for customer acquisition.
+
+          - name: acq_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_country_code
+            description: Country code of the acquisition bill.
+
+          - name: acq_reseller_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_reseller_type_name
+            description: Reseller type at time of acquisition.
+
+          - name: acq_private_label_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_private_label_id
+            description: Private label ID at time of acquisition.
+
+          - name: acq_fraud_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_fraud_flag
+            description: True if the acquisition event was flagged as fraud.
+
+          - name: acq_gcr_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_gcr_usd_amt
+            description: Gross cash received (GCR) in USD at the time of acquisition.
+
+          - name: acq_product_list_price_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_product_list_price_usd_amt
+            description: Product list price in USD at the time of acquisition.
+
+          - name: acq_point_of_purchase_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_point_of_purchase_name
+            description: Point of purchase at time of acquisition.
+
+          - name: acq_viral_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_viral_flag
+            description: True if the acquisition was viral or referral-based.
+
+          - name: acq_product_names
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acq_product_names
+            description: Product names purchased at acquisition.
+
+          - name: load_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: load_date
+            dimension:
+              is_time: true
+            description: ETL load date for this record.
+
+      - name: dim_country
+        source: finance360.dim_country_vw
+        primary_key: [country_code]
+        unique_keys:
+          - [country_code]
+        description: >
+          GoDaddy country reference dimension. Contains geographic, reporting, and financial
+          region hierarchies per country. Filter current_record_flag = true for a single current
+          record per country_code and to ensure a clean M:1 join. Note: GoDaddy country_code
+          may differ from ISO codes (e.g., 'UK'; PySpark ETL normalizes to 'GB' when writing
+          customer_acquisition_country_code on the fact).
+        ai_context:
+          synonyms:
+            - "country dimension"
+            - "geography"
+            - "country reference"
+        fields:
+          - name: country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: country_code
+            description: >
+              GoDaddy country identifier. Primary key (filter current_record_flag = true for M:1
+              join). May differ from ISO codes (GoDaddy 'UK' is normalized to 'GB' in ETL).
+
+          - name: country_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: country_name
+            description: Name of the country.
+
+          - name: iso_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: iso_country_code
+            description: ISO 2-character country code.
+
+          - name: iso_country3_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: iso_country3_code
+            description: ISO 3-character country code.
+
+          - name: iso_country_num
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: iso_country_num
+            description: ISO numeric country identifier.
+
+          - name: region_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region_name
+            description: Region name (e.g., Europe, Asia Pacific).
+
+          - name: region_sort_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region_sort_id
+            description: Region sort order identifier.
+
+          - name: primary_language_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: primary_language_name
+            description: Primary language spoken in this country.
+
+          - name: domestic_international_ind
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: domestic_international_ind
+            description: Indicator of Domestic or International classification.
+
+          - name: tier_num
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: tier_num
+            description: Country tier classification.
+
+          - name: report_region_1_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: report_region_1_name
+            description: >
+              Reporting region hierarchy level 1. Denormalized to
+              customer_life_cycle.customer_region_1_name.
+
+          - name: report_region_2_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: report_region_2_name
+            description: >
+              Reporting region hierarchy level 2. Denormalized to
+              customer_life_cycle.customer_region_2_name.
+
+          - name: report_region_3_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: report_region_3_name
+            description: >
+              Reporting region hierarchy level 3. Denormalized to
+              customer_life_cycle.customer_region_3_name.
+
+          - name: report_focal_country_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: report_focal_country_name
+            description: Country or language reporting group.
+
+          - name: report_sub_region_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: report_sub_region_name
+            description: Additional reporting sub-region.
+
+          - name: legacy_region_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: legacy_region_name
+            description: Legacy region hierarchy name (retained for backwards compatibility).
+
+          - name: eu_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: eu_flag
+            description: True if the country is a member of the European Union.
+
+          - name: active_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: active_flag
+            description: True if this country code is currently active.
+
+          - name: fin_region_1_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fin_region_1_name
+            description: Finance reporting region hierarchy level 1.
+
+          - name: fin_region_2_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fin_region_2_name
+            description: Finance reporting region hierarchy level 2.
+
+          - name: marketing_region_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: marketing_region_name
+            description: Marketing region name.
+
+          - name: marketing_region_group_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: marketing_region_group_name
+            description: Marketing region group name.
+
+          - name: finance_region_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: finance_region_name
+            description: Finance region name.
+
+          - name: row_hash
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: row_hash
+            description: SHA2 hash of tracked columns used for SCD2 change detection.
+
+          - name: key_hash
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: key_hash
+            description: SHA2 hash of key columns.
+
+          - name: current_record_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: current_record_flag
+            description: >
+              True for the current/active record for this country_code. Filter
+              current_record_flag = true for a clean M:1 join to avoid SCD2 fan-out.
+
+          - name: etl_insert_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_insert_utc_ts
+            dimension:
+              is_time: true
+            description: Record insert timestamp (UTC).
+
+          - name: etl_update_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_update_utc_ts
+            dimension:
+              is_time: true
+            description: Record last updated timestamp (UTC).
+
+      - name: dim_bill_line_purchase_attribution
+        source: ecomm_mart.dim_bill_line_purchase_attribution
+        primary_key: [bill_id, bill_line_num]
+        unique_keys:
+          - [bill_id, bill_line_num]
+        description: >
+          Purchase attribution dimension for bill line items. Tracks point of purchase and
+          purchase path per bill line. Multiple rows exist per bill_id (one per bill line number).
+          Use ROW_NUMBER() OVER (PARTITION BY bill_id ORDER BY bill_line_num DESC) = 1 to obtain
+          a single point-of-purchase record per bill and avoid fan-out when joining from
+          customer_life_cycle.customer_acquisition_bill_id.
+        ai_context:
+          synonyms:
+            - "purchase attribution"
+            - "point of purchase"
+            - "bill line attribution"
+        fields:
+          - name: bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_id
+            description: >
+              Bill identifier. Part of composite PK (bill_id, bill_line_num). FK from
+              customer_life_cycle.customer_acquisition_bill_id.
+
+          - name: bill_line_num
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_line_num
+            description: >
+              Line item number within the bill. Part of composite PK. Use MAX(bill_line_num)
+              or ROW_NUMBER() OVER (PARTITION BY bill_id ORDER BY bill_line_num DESC) = 1
+              for deduplication to a single record per bill.
+
+          - name: bill_modified_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_modified_mst_ts
+            dimension:
+              is_time: true
+            description: Timestamp of the bill modification (MST).
+
+          - name: bill_modified_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_modified_mst_date
+            dimension:
+              is_time: true
+            description: Date of the bill modification (MST).
+
+          - name: purchase_path_attributed_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: purchase_path_attributed_name
+            description: Attributed purchase path name for this bill line.
+
+          - name: point_of_purchase_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: point_of_purchase_name
+            description: >
+              Point of purchase name for this bill line. Denormalized to
+              customer_life_cycle.point_of_purchase_name.
+
+          - name: sub_point_of_purchase_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: sub_point_of_purchase_name
+            description: Sub point of purchase name for this bill line.
+
+          - name: customer_product_purchase_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_product_purchase_type_name
+            description: Customer product purchase type name.
+
+          - name: etl_build_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_build_mst_ts
+            dimension:
+              is_time: true
+            description: ETL build timestamp (MST).
+
+      - name: dim_bill_fraud_history
+        source: finance360.dim_bill_fraud_history_vw
+        primary_key: [bill_id, effective_start_mst_ts]
+        unique_keys:
+          - [bill_id, effective_start_mst_ts]
+        description: >
+          SCD2 fraud history dimension for bills. Tracks fraud flag events per bill with
+          effective date ranges. Filter current_record_flag = true to get the current fraud
+          record per bill, or use SELECT DISTINCT bill_id, to avoid SCD2 fan-out when joining
+          from customer_life_cycle.customer_acquisition_bill_id.
+        ai_context:
+          synonyms:
+            - "bill fraud"
+            - "fraud history"
+            - "fraud dimension"
+        fields:
+          - name: bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_id
+            description: >
+              Bill identifier. Part of composite SCD2 PK (bill_id, effective_start_mst_ts).
+              FK from customer_life_cycle.customer_acquisition_bill_id. PySpark uses
+              SELECT DISTINCT bill_id from this table before joining.
+
+          - name: fraud_flag_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fraud_flag_mst_ts
+            dimension:
+              is_time: true
+            description: Timestamp when the fraud flag was set on this bill (MST).
+
+          - name: fraud_flag_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fraud_flag_mst_date
+            dimension:
+              is_time: true
+            description: Date when the fraud flag was set on this bill (MST).
+
+          - name: fraud_review_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fraud_review_id
+            description: ID of the fraud review in which this bill was marked as fraudulent.
+
+          - name: row_hash
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: row_hash
+            description: SHA2 hash of tracked columns for SCD2 change detection.
+
+          - name: key_hash
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: key_hash
+            description: SHA2 hash of key columns.
+
+          - name: effective_start_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: effective_start_mst_ts
+            dimension:
+              is_time: true
+            description: SCD2 effective start timestamp (MST). Part of composite PK.
+
+          - name: effective_end_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: effective_end_mst_ts
+            dimension:
+              is_time: true
+            description: SCD2 effective end timestamp (MST). Null for the current record.
+
+          - name: current_record_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: current_record_flag
+            description: >
+              True for the current SCD2 record for this bill_id. Filter current_record_flag =
+              true to obtain a single fraud record per bill and avoid fan-out when joining
+              from customer_life_cycle.
+
+          - name: etl_insert_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_insert_utc_ts
+            dimension:
+              is_time: true
+            description: Record insert timestamp (UTC).
+
+          - name: etl_update_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_update_utc_ts
+            dimension:
+              is_time: true
+            description: Record last updated timestamp (UTC).
+
+    relationships:
+      - name: life_cycle_to_shopper_acquisition
+        from: customer_life_cycle
+        to: shopper_acquisition
+        from_columns: [shopper_id]
+        to_columns: [shopper_id]
+
+      - name: life_cycle_to_dim_country
+        from: customer_life_cycle
+        to: dim_country
+        from_columns: [customer_acquisition_country_code]
+        to_columns: [country_code]
+
+      - name: life_cycle_to_dim_bill_line_purchase_attribution
+        from: customer_life_cycle
+        to: dim_bill_line_purchase_attribution
+        from_columns: [customer_acquisition_bill_id]
+        to_columns: [bill_id]
+        ai_context: >
+          FAN-OUT GUARD REQUIRED: dim_bill_line_purchase_attribution has multiple rows per
+          bill_id (one per bill_line_num; composite PK is [bill_id, bill_line_num]). Always
+          apply ROW_NUMBER() OVER (PARTITION BY bill_id ORDER BY bill_line_num DESC) = 1
+          before joining to avoid multiplying fact rows.
+
+      - name: life_cycle_to_dim_bill_fraud_history
+        from: customer_life_cycle
+        to: dim_bill_fraud_history
+        from_columns: [customer_acquisition_bill_id]
+        to_columns: [bill_id]
+        ai_context: >
+          FAN-OUT GUARD REQUIRED: dim_bill_fraud_history is an SCD2 table with multiple
+          records per bill_id (composite PK is [bill_id, effective_start_mst_ts]). Filter
+          current_record_flag = true, or use SELECT DISTINCT bill_id, before joining to avoid
+          multiplying fact rows.
+
+    metrics:
+      - name: total_ttm_gcr_usd_amt
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_life_cycle.ttm_gcr_usd_amt)
+        description: >
+          Total gross cash received (GCR) in USD across trailing twelve months for all selected
+          customers. Aggregate of the ttm_gcr_usd_amt scalar field (itself derived from
+          SUM(ttm_total_gcr_usd_amt) in the PySpark ETL from
+          customer_core_conformed.customer_ttm_payment_driver).
+        ai_context:
+          synonyms:
+            - "total TTM GCR"
+            - "trailing twelve month revenue"
+            - "total last 12 months revenue"
+            - "total GCR"
+
+      - name: active_customer_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT CASE WHEN customer_life_cycle.active_status_flag = true THEN customer_life_cycle.shopper_id END)
+        description: >
+          Number of distinct active shoppers at the evaluation date
+          (active_status_flag = true). Always filter by partition_eval_mst_date before
+          aggregating to target a specific snapshot date.
+        ai_context:
+          synonyms:
+            - "number of active customers"
+            - "active shopper count"
+            - "active customer base"
+
+      - name: avg_product_pnl_category_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: AVG(customer_life_cycle.product_pnl_category_qty)
+        description: >
+          Average number of distinct product PNL categories per customer (product breadth proxy).
+          Based on product_pnl_category_qty scalar field, which is derived as
+          COUNT(DISTINCT product_pnl_category) in the PySpark ETL from
+          enterprise.dim_subscription_history via the
+          customer_core_conformed.customer_active_subscription_detail_driver driver.
+        ai_context:
+          synonyms:
+            - "average product breadth"
+            - "average PNL category count"
+            - "avg product categories"
+
+    custom_extensions:
+      - vendor_name: GODADDY
+        data: |
+          {
+            "lake_table_path": "customer360/customer-life-cycle-vw",
+            "pyspark_path": "customer360/customer-metrics/src/pyspark/customer_life_cycle.py",
+            "dag_name": "customer-life-cycle",
+            "refresh_cadence": "daily at 07:20 UTC (cron: 20 7 * * *)",
+            "sla_delivery": "daily by 08:00 AM MST (cron: 00 15 * * ? * UTC)",
+            "data_tier": 4,
+            "partition_key": "partition_eval_mst_date",
+            "domain": "customer",
+            "organization": "DNA",
+            "pipeline_lineage": {
+              "intermediate_tables": [
+                {
+                  "table": "customer_core_conformed.active_customer_stg",
+                  "role": "staging - base population of active and recently-churned customers for the eval date",
+                  "upstream_pyspark": "UNRESOLVED: DAG sensor key local_process/customer_core_conformed/active_customer_stg"
+                },
+                {
+                  "table": "customer_core_conformed.customer_ttm_payment_driver",
+                  "role": "driver - pre-aggregated trailing-twelve-month payment data per (shopper_id, customer_id); source for ttm_gcr_usd_amt, ttm_all_bill_list, brand_name_list",
+                  "upstream_pyspark": "UNRESOLVED: DAG sensor key local_process/customer_core_conformed/customer_ttm_payment_driver"
+                },
+                {
+                  "table": "customer_core_conformed.customer_active_subscription_detail_driver",
+                  "role": "driver - pre-filtered active subscription detail per (shopper_id, customer_id); source for active_paid_subscription_list, product_pnl_category_list, product_pnl_line_list, product_pnl_category_qty",
+                  "upstream_pyspark": "UNRESOLVED: DAG sensor key local_process/customer_core_conformed/customer_active_subscription_detail_driver"
+                }
+              ],
+              "transitive_sources": [
+                {
+                  "table": "enterprise.dim_subscription_history",
+                  "via": "customer_core_conformed.customer_active_subscription_detail_driver",
+                  "materialized_in_fields": [
+                    "active_paid_subscription_list",
+                    "product_pnl_category_list",
+                    "product_pnl_line_list",
+                    "product_pnl_category_qty"
+                  ]
+                }
+              ],
+              "materialized_direct_reads": [
+                {
+                  "table": "analytic_feature.customer_type_history",
+                  "materialized_in_fields": [
+                    "customer_type_name",
+                    "customer_type_reason_desc"
+                  ],
+                  "join_note": "SCD2: shopper_id with date-range filter record_start_mst_date <= eval <= record_end_mst_date; cannot re-join without eval date context"
+                },
+                {
+                  "table": "dp_enterprise.dim_reseller",
+                  "materialized_in_fields": [
+                    "reseller_type_id",
+                    "reseller_type_name"
+                  ],
+                  "join_note": "FK chain: customer360.dim_customer_history_vw.private_label_id -> dp_enterprise.dim_reseller; private_label_id not on fact"
+                },
+                {
+                  "table": "analytic_feature.shopper_merge",
+                  "materialized_in_fields": [
+                    "customer_merge_mst_date"
+                  ],
+                  "join_note": "SCD2: shopper_id with date-range filter shopper_merge_start_mst_date <= eval <= shopper_merge_end_mst_date; cannot re-join without eval date context"
+                },
+                {
+                  "table": "ecomm_mart.bill_line_traffic_ext",
+                  "materialized_in_fields": [
+                    "customer_acquisition_channel_name"
+                  ],
+                  "join_note": "complex time-filtered acquisition bill join; includes pre-2022-08 legacy S3 path equivalent"
+                },
+                {
+                  "table": "customer360.dim_customer_history_vw",
+                  "materialized_in_fields": [],
+                  "join_note": "SCD2 intermediate; provides private_label_id for dim_reseller lookup only; no columns appear directly on fact; do not join directly"
+                },
+                {
+                  "table": "enterprise.dim_new_acquisition_shopper",
+                  "materialized_in_fields": [
+                    "customer_acquisition_mst_date",
+                    "customer_acquisition_bill_id"
+                  ],
+                  "join_note": "acquisition derivation chain for new and intraday customers (PySpark joins 11 and 19)"
+                }
+              ],
+              "legacy_sources": [
+                {
+                  "path": "s3://gd-ckpetlbatch-prod-analytic/analytic/ads_bill_line_ext/",
+                  "equivalent": "ecomm_mart.bill_line_traffic_ext",
+                  "condition": "pre-2022-08 partitions only; HARDCODED prod path in customer_life_cycle.py (code defect: not environment-parameterized unlike all other reads); policy YAML labels as analytic_local.ads_bill_line_ext (approximate)"
+                }
+              ]
+            },
+            "query_guards": {
+              "grain": "one row per (shopper_id, partition_eval_mst_date)",
+              "partition_filter": "partition_eval_mst_date",
+              "primary_key_notes": "Composite PK (partition_eval_mst_date, shopper_id); customer_id is NOT unique alone and may be null for historical records; Hive DDL PK comment listing resource_id and product_family_name is a copy-paste error from another table - disregard; authoritative PK confirmed by DQ constraint isPrimaryKey(partition_eval_mst_date, shopper_id) on customer360.customer_life_cycle_vw"
+            }
+          }

@@ -13,6 +13,7 @@ Read:
 - `gather.md`
 - `analyze.md`
 - `RESOLVED_TARGET.json`
+- `PROVENANCE.json`
 - `SEMANTIC_MODEL.yaml`
 
 ## Step 2: Structural validation
@@ -49,10 +50,26 @@ For each dataset, field, relationship, and metric:
 - Time dimensions should have `is_time: true`
 - At least one metric if analyze.md identified any
 
+## Step 5b: Provenance validation
+Using `PROVENANCE.json` and `docs/osi-spec-reference.md`:
+- `PROVENANCE.json` exists; `custom_extensions.data` parses as valid JSON
+- When `PROVENANCE.json` lists intermediate or transitive tables,
+  `custom_extensions.data` must contain a `pipeline_lineage` object
+- Every field in `transitive_sources[].materialized_in_fields` and
+  `materialized_direct_reads[].materialized_in_fields` has a matching fact field
+  whose `description` mentions the upstream table or pipeline (fix in-place if missing)
+- No item from `do_not_claim` appears as a dataset `source`, relationship endpoint,
+  or metric expression
+- Fields listed in `array_fields` are not referenced in metric expressions
+- `ai_context.instructions` includes grain, partition filter, and PK caveats from
+  `query_guards`
+Fix any missing provenance in-place in `SEMANTIC_MODEL.yaml`.
+
 ## Step 6: Append report to validate.md
 Append:
 - Semantic model name
-- PASS/FAIL for structural, reference, and accuracy validation
+- PASS/FAIL for structural, reference, accuracy, and **provenance** validation
+- Provenance fields enriched (list)
 - Issues found and how they were fixed
 - Items removed due to lack of evidence
 - Final counts: datasets, fields, relationships, metrics
@@ -61,156 +78,193 @@ Append:
 
 ---
 
-## Validation Report — customer360_customer_life_cycle_analytics
-**Validated:** 2026-06-03
+# Validation Report — customer360_customer_life_cycle_analytics
+
+**Stage:** validate
+**Date:** 2026-06-05
 **Validator:** OSI strict validation agent (v0.2.0.dev0)
+**Artifacts read:** INPUT.md, gather.md, analyze.md, RESOLVED_TARGET.json, PROVENANCE.json, SEMANTIC_MODEL.yaml, docs/osi-spec-reference.md
 
 ---
 
-### Semantic Model Name
-`customer360_customer_life_cycle_analytics`
+## Validation Results
 
----
-
-### Step 2: Structural Validation — PASS
-
-All OSI spec v0.2.0.dev0 structural rules satisfied:
-
-| Check | Result | Notes |
-|---|---|---|
-| Root `version: "0.2.0.dev0"` | ✅ PASS | Line 1 |
-| Root `semantic_model` array | ✅ PASS | Line 3 |
-| Model has `name` | ✅ PASS | `customer360_customer_life_cycle_analytics` |
-| Model has `datasets` (min 1) | ✅ PASS | 6 datasets |
-| Each dataset has `name` and `source` | ✅ PASS | All 6 datasets |
-| Each field has `name` and `expression.dialects` | ✅ PASS | All 134 fields; all have ANSI_SQL dialect |
-| Each metric has `name` and `expression.dialects` | ✅ PASS | All 5 metrics |
-| Each relationship has `name`, `from`, `to`, `from_columns`, `to_columns` | ✅ PASS | All 5 relationships |
-| `len(from_columns) == len(to_columns)` | ✅ PASS | All relationships are 1:1 column mappings |
-| Field expressions are scalar (no aggregates) | ✅ PASS | All field expressions are bare column references |
-| Metric expressions contain aggregates | ✅ PASS | SUM, COUNT(DISTINCT), AVG present in all 5 metrics |
-| All names unique within scope | ✅ PASS | Datasets, per-dataset fields, metrics, relationships all unique |
-| `custom_extensions.data` is valid JSON string | ✅ PASS | Single JSON string with 4 keys |
-
----
-
-### Step 3: Reference Validation — PASS
-
-| Check | Result | Notes |
-|---|---|---|
-| Relationship `from` references existing dataset | ✅ PASS | All 5 use `customer_life_cycle_vw` (exists) |
-| Relationship `to` references existing dataset | ✅ PASS | `shopper_acquisition`, `dim_reseller`, `dim_country_vw`, `dim_customer_history_vw`, `dim_subscription_history` all exist |
-| `from_columns` exist as fields in `from` dataset | ✅ PASS | `shopper_id`, `reseller_type_id`, `customer_acquisition_country_code`, `customer_id`, `active_paid_subscription_list` all in `customer_life_cycle_vw` |
-| `to_columns` exist as fields in `to` dataset | ✅ PASS | `shopper_id` (shopper_acquisition), `reseller_type_id` (dim_reseller), `country_code` (dim_country_vw), `customer_id` (dim_customer_history_vw), `subscription_id` (dim_subscription_history) all exist |
-| Dataset sources are lake tables only | ✅ PASS | All 6 confirmed in `repos/lake/catalog/config/prod/` |
-| Primary keys exist as fields in datasets | ✅ PASS | All composite and scalar PKs verified |
-
-**Source lake table paths verified:**
-| Dataset | Source | Lake Registry Path |
-|---|---|---|
-| `customer_life_cycle_vw` | `customer360.customer_life_cycle_vw` | `dlms-api/us-west-2/customer360/customer-life-cycle-vw/` |
-| `shopper_acquisition` | `analytic_feature.shopper_acquisition` | `us-west-2/analytic-feature/shopper-acquisition/` |
-| `dim_reseller` | `dp_enterprise.dim_reseller` | `us-west-2/dp-enterprise/dim-reseller/` |
-| `dim_country_vw` | `finance360.dim_country_vw` | `dlms-api/us-west-2/finance360/dim-country-vw/` |
-| `dim_customer_history_vw` | `customer360.dim_customer_history_vw` | `dlms-api/us-west-2/customer360/dim-customer-history-vw/` |
-| `dim_subscription_history` | `enterprise.dim_subscription_history` | `us-west-2/enterprise/dim-subscription-history/` |
-
----
-
-### Step 4: Accuracy Validation — PASS (1 issue found and fixed)
-
-**Issue found and fixed:**
-
-| # | Location | Issue | Fix | Evidence |
-|---|---|---|---|---|
-| 1 | `ai_context.instructions` (model level) | Said "customer_state_enum enumerates **five** states: active, churned, reactivated, merged, intraday" — missing state `new` | Changed to "six states: active, new, churned, reactivated, merged, intraday" | gather.md DDL: "Enum: intraday → merged → churned → reactivated → **new** → active"; field description at YAML line 357 also includes 'new' |
-
-**Accuracy checks passed:**
-- All 35 `customer_life_cycle_vw` fields match `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.ddl` ✅
-- All 17 `shopper_acquisition` fields match `repos/lake/catalog/config/prod/us-west-2/analytic-feature/shopper-acquisition/table.ddl` ✅
-- All 10 `dim_reseller` fields match `repos/lake/catalog/config/prod/us-west-2/dp-enterprise/dim-reseller/table.ddl` ✅
-- All 20 `dim_country_vw` fields match `repos/lake/catalog/config/prod/dlms-api/us-west-2/finance360/dim-country-vw/table.ddl` ✅
-- All 31 `dim_customer_history_vw` fields match `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/dim-customer-history-vw/table.ddl` ✅
-- All 21 `dim_subscription_history` fields match `repos/lake/catalog/config/prod/us-west-2/enterprise/dim-subscription-history/table.ddl` ✅
-- 5 metrics: expressions and descriptions backed by PySpark aggregations in gather.md ✅
-- All 5 relationships: column mappings consistent with PySpark join conditions and lake DDL FK annotations ✅
-- Descriptions sourced from: lake DDL column comments, Alation description, Confluence Customer Lifecycle design doc ✅
-- No invented columns, metrics, or relationships detected ✅
-
-**No items removed** — all elements in the model have verified evidence.
-
-**Internal staging tables correctly excluded:**
-- `customer_core_conformed.customer_life_cycle` — internal ETL target, not a lake table ✅
-- `customer_core_conformed.customer_ttm_payment_driver` — internal driver ✅
-- `customer_core_conformed.customer_active_subscription_detail_driver` — internal driver ✅
-- `customer_core_conformed.active_customer_stg` — internal driver ✅
-
-**Relationship note (reseller):** `customer_life_cycle_to_dim_reseller` joins on `reseller_type_id → reseller_type_id`. The ETL internally joins on `private_label_id`, but `private_label_id` is not an output column in `customer_life_cycle_vw`. The lake DDL FK annotation on `reseller_type_id` is authoritative for consumer-facing joins; `reseller_type_id` exists as a field in both datasets. The ai_context note correctly flags this as a non-unique lookup key (dim_reseller PK is `private_label_id`).
-
----
-
-### Step 5: Completeness Check — PASS
-
-| Check | Result | Notes |
-|---|---|---|
-| Target table present as dataset | ✅ PASS | `customer_life_cycle_vw` is the primary fact dataset |
-| Key dimension tables included | ✅ PASS | 5 dimensions: shopper_acquisition, dim_reseller, dim_country_vw, dim_customer_history_vw, dim_subscription_history |
-| Omitted dimensions justified | ✅ PASS | 8 tables omitted per analyze.md "Do Not Claim" list — all have attributes already denormalized into fact |
-| Time dimensions have `is_time: true` | ✅ PASS | All date/timestamp/partition columns flagged; see breakdown below |
-| At least one metric | ✅ PASS | 5 metrics present |
-| Partition column present and flagged | ✅ PASS | `partition_eval_mst_date` has `is_time: true` |
-| custom_extensions include operational metadata | ✅ PASS | `lake_table_path`, `pyspark_path`, `dag_name`, `refresh_cadence` |
-
-**Time dimension coverage by dataset:**
-| Dataset | `is_time: true` fields |
+| Check | Result |
 |---|---|
-| customer_life_cycle_vw | customer_acquisition_mst_date, customer_acquisition_mst_month, customer_churn_mst_date, customer_reactivate_mst_date, customer_merge_mst_date, customer_fraud_mst_date, etl_build_mst_ts, partition_eval_mst_date (8) |
-| shopper_acquisition | evaluation_mst_date, acq_bill_mst_date, acq_bill_mst_ts, load_date (4) |
-| dim_country_vw | etl_insert_utc_ts, etl_update_utc_ts (2) |
-| dim_customer_history_vw | created_mst_ts, updated_mst_ts, closed_mst_ts, effective_start_mst_ts, effective_end_mst_ts, etl_build_mst_ts, etl_insert_mst_ts, etl_update_mst_ts (8) |
-| dim_subscription_history | subscription_bill_due_mst_ts, subscription_bill_due_mst_date, subscription_paid_through_mst_date, subscription_cancel_mst_date, subscription_create_mst_ts, subscription_create_mst_date (6) |
+| Structural | **PASS** |
+| Reference | **PASS** |
+| Accuracy | **PASS** |
+| Provenance | **PASS** |
 
 ---
 
-### Final Counts
+## Step 2: Structural Validation Detail
 
-| Category | Count |
+| Rule | Result | Notes |
+|---|---|---|
+| Root has `version: "0.2.0.dev0"` | ✅ PASS | Line 1 |
+| Root has `semantic_model` array | ✅ PASS | Line 3 |
+| Each model has `name` and `datasets` (min 1) | ✅ PASS | name=`customer360_customer_life_cycle_analytics`; 5 datasets |
+| Each dataset has `name` and `source` | ✅ PASS | All 5 datasets valid |
+| Each field has `name` and `expression.dialects` (ANSI_SQL) | ✅ PASS | All 100 fields verified; all use `dialect: ANSI_SQL` |
+| Each metric has `name` and `expression.dialects` | ✅ PASS | 3 metrics, all have ANSI_SQL dialect |
+| Each relationship has `name`, `from`, `to`, `from_columns`, `to_columns` | ✅ PASS | 4 relationships, all have required fields |
+| `len(from_columns) == len(to_columns)` | ✅ PASS | All 4 relationships: 1 from_column = 1 to_column |
+| Field expressions are scalar (no SUM/COUNT/AVG/MIN/MAX) | ✅ PASS | All 100 field expressions are simple column references |
+| Metric expressions contain aggregates | ✅ PASS | SUM, COUNT(DISTINCT …), AVG all present |
+| All names unique within scope | ✅ PASS | No duplicate dataset, field, metric, or relationship names found |
+| `custom_extensions.data` is a valid JSON string | ✅ PASS | Single GODADDY entry; data is a quoted JSON string containing all required keys |
+
+---
+
+## Step 3: Reference Validation Detail
+
+| Rule | Result | Notes |
+|---|---|---|
+| Relationship `from`/`to` reference existing dataset names | ✅ PASS | All 4 relationships: from=`customer_life_cycle` exists; to= `shopper_acquisition`, `dim_country`, `dim_bill_line_purchase_attribution`, `dim_bill_fraud_history` all exist |
+| Relationship columns exist in respective datasets | ✅ PASS | `shopper_id` in both, `customer_acquisition_country_code`/`country_code`, `customer_acquisition_bill_id`/`bill_id` all confirmed as named fields |
+| Dataset sources are lake tables only | ✅ PASS | All 5 sources confirmed in analyze.md lineage table as lake catalog entries (`us-west-2/` or `dlms-api/us-west-2/`): `customer360.customer_life_cycle_vw`, `analytic_feature.shopper_acquisition`, `finance360.dim_country_vw`, `ecomm_mart.dim_bill_line_purchase_attribution`, `finance360.dim_bill_fraud_history_vw` |
+| Primary keys exist as fields in datasets | ✅ PASS | `customer_life_cycle`: [shopper_id ✅, partition_eval_mst_date ✅]; `shopper_acquisition`: [shopper_id ✅]; `dim_country`: [country_code ✅]; `dim_bill_line_purchase_attribution`: [bill_id ✅, bill_line_num ✅]; `dim_bill_fraud_history`: [bill_id ✅, effective_start_mst_ts ✅] |
+| No `do_not_claim` item appears as dataset source | ✅ PASS | All 14 do_not_claim items checked; none appear as source, relationship endpoint, or metric expression |
+
+**Fan-out warning (flagged and fixed):** Relationships `life_cycle_to_dim_bill_line_purchase_attribution` and `life_cycle_to_dim_bill_fraud_history` join on `bill_id` which is not a unique key in the respective dimension tables (composite PKs: [bill_id, bill_line_num] and [bill_id, effective_start_mst_ts]). These relationships are OSI-valid per spec (required fields all present, column references correct), but required join guards documented. **Fixed in-place:** added `ai_context` to each relationship with explicit fan-out guard instructions.
+
+---
+
+## Step 4: Accuracy Validation Detail
+
+All datasets, fields, relationships, and metrics traced to verifiable evidence:
+
+| Dataset | Evidence |
 |---|---|
-| Datasets | 6 (1 fact + 5 dimensions) |
-| Fields total | 134 (35 + 17 + 10 + 20 + 31 + 21) |
-| Relationships | 5 |
-| Metrics | 5 |
-| custom_extensions | 1 |
-| Structural issues fixed | 0 |
-| Accuracy issues fixed | 1 (customer_state_enum state count: five → six, added 'new') |
-| Items removed (no evidence) | 0 |
+| `customer_life_cycle` (customer360.customer_life_cycle_vw) | DAG SuccessNotificationOperator, DQ constraint isPrimaryKey, lake catalog `dlms-api/us-west-2/customer360/customer-life-cycle-vw/`, Alation ID 7038345, RESOLVED_TARGET.json |
+| `shopper_acquisition` (analytic_feature.shopper_acquisition) | PySpark join #1; lake catalog `us-west-2/analytic-feature/shopper-acquisition/` confirmed in analyze.md Step 3 |
+| `dim_country` (finance360.dim_country_vw) | PySpark join #12; lake catalog `dlms-api/us-west-2/finance360/dim-country-vw/` confirmed |
+| `dim_bill_line_purchase_attribution` (ecomm_mart.dim_bill_line_purchase_attribution) | PySpark join #9; lake catalog `us-west-2/ecomm-mart/dim-bill-line-purchase-attribution/` confirmed |
+| `dim_bill_fraud_history` (finance360.dim_bill_fraud_history_vw) | PySpark join #10; lake catalog `dlms-api/us-west-2/finance360/dim-bill-fraud-history-vw/` confirmed |
+
+**Metrics evidence:**
+- `total_ttm_gcr_usd_amt`: SUM(ttm_gcr_usd_amt) — scalar field pre-computed from customer_ttm_payment_driver; confirmed in analyze.md Step 7 and PySpark ETL
+- `active_customer_count`: COUNT(DISTINCT CASE WHEN active_status_flag = true THEN shopper_id END) — derived from active_status_flag field confirmed in DDL and gather.md
+- `avg_product_pnl_category_qty`: AVG(product_pnl_category_qty) — scalar proxy confirmed in analyze.md and PROVENANCE.json array_fields
+
+**Items removed due to lack of evidence:** None. All 100 fields, 4 relationships, and 3 metrics are backed by PySpark code, DDL, or lake catalog evidence.
 
 ---
 
-### Overall Result: PASS
+## Step 5: Completeness Check
 
-`SEMANTIC_MODEL.yaml` is structurally valid per OSI spec v0.2.0.dev0, internally consistent, and accurate against the authoritative PySpark source, lake DDLs, and supporting documentation. One accuracy issue (missing 'new' state in model-level ai_context instructions) was fixed in-place.
+| Check | Result |
+|---|---|
+| Target table `customer360.customer_life_cycle_vw` present as dataset | ✅ YES — `customer_life_cycle` |
+| Key dimension tables from analyze.md included | ✅ YES — all 4 classified OSI dimensions included |
+| Omitted dimensions noted with justification | ✅ YES — all 10 do_not_claim omissions explained in descriptions and ai_context |
+| Time dimensions have `is_time: true` | ✅ YES — 17 time fields marked across all datasets: partition_eval_mst_date, customer_acquisition_mst_date, customer_churn_mst_date, customer_reactivate_mst_date, customer_merge_mst_date, customer_fraud_mst_date, etl_build_mst_ts (fact); evaluation_mst_date, acq_bill_mst_date, acq_bill_mst_ts, load_date (shopper_acquisition); etl_insert_utc_ts, etl_update_utc_ts (dim_country, dim_bill_fraud_history); bill_modified_mst_ts, bill_modified_mst_date, etl_build_mst_ts (dim_bill_line_purchase_attribution); fraud_flag_mst_ts, fraud_flag_mst_date, effective_start_mst_ts, effective_end_mst_ts (dim_bill_fraud_history) |
+| At least one metric | ✅ YES — 3 metrics |
+
+---
+
+## Step 5b: Provenance Validation Detail
+
+| Check | Result | Notes |
+|---|---|---|
+| PROVENANCE.json exists | ✅ PASS | Present at workspace root |
+| `custom_extensions.data` parses as valid JSON | ✅ PASS | GODADDY vendor JSON string validated |
+| `pipeline_lineage` object present (intermediate/transitive tables listed) | ✅ PASS | `pipeline_lineage` key contains `intermediate_tables`, `transitive_sources`, `materialized_direct_reads`, `legacy_sources` |
+| `transitive_sources[].materialized_in_fields` all have matching fact fields with upstream table in description | ✅ PASS | `enterprise.dim_subscription_history` → `active_paid_subscription_list`, `product_pnl_category_list`, `product_pnl_line_list`, `product_pnl_category_qty` — all 4 fields present; all descriptions reference `enterprise.dim_subscription_history` |
+| `materialized_direct_reads[].materialized_in_fields` all have matching fact fields with upstream table in description | ✅ PASS | All 8 fields across 5 direct-read tables verified (see table below) |
+| No `do_not_claim` item as dataset source | ✅ PASS | Verified across all 14 do_not_claim entries |
+| No `do_not_claim` item as relationship endpoint | ✅ PASS | No excluded table appears as `from` or `to` in any relationship |
+| No `do_not_claim` item in metric expressions | ✅ PASS | No array field appears in SUM/COUNT/AVG expressions |
+| `array_fields` not in metric expressions | ✅ PASS | active_paid_subscription_list, product_pnl_category_list, product_pnl_line_list, ttm_all_bill_list, brand_name_list all absent from metric expressions |
+| `ai_context.instructions` includes grain | ✅ PASS | "This model tracks daily customer lifecycle states" + "one row per shopper per evaluation date" |
+| `ai_context.instructions` includes partition filter | ✅ PASS | "ALWAYS filter by partition_eval_mst_date for point-in-time queries" |
+| `ai_context.instructions` includes PK caveats | ✅ PASS | "The composite primary key is (shopper_id, partition_eval_mst_date); customer_id may be null for some historical records and is NOT unique alone." |
+
+**Materialized direct-reads field verification:**
+
+| Upstream Table | Fields | Description Mentions Upstream? |
+|---|---|---|
+| analytic_feature.customer_type_history | customer_type_name, customer_type_reason_desc | ✅ Both mention "analytic_feature.customer_type_history via SCD2 time-filtered join" |
+| dp_enterprise.dim_reseller | reseller_type_id, reseller_type_name | ✅ Both mention "dp_enterprise.dim_reseller via customer360.dim_customer_history_vw.private_label_id join chain" |
+| analytic_feature.shopper_merge | customer_merge_mst_date | ✅ Mentions "analytic_feature.shopper_merge via SCD2 date-range join" |
+| ecomm_mart.bill_line_traffic_ext | customer_acquisition_channel_name | ✅ Mentions "ecomm_mart.bill_line_traffic_ext via customer360/customer-metrics PySpark join #6" |
+| enterprise.dim_new_acquisition_shopper | customer_acquisition_mst_date, customer_acquisition_bill_id | ✅ Both mention "enterprise.dim_new_acquisition_shopper via acquisition derivation chain" |
+
+**Provenance fields enriched (all pre-existing in generated model — no in-place fixes required for provenance):**
+- active_paid_subscription_list → enterprise.dim_subscription_history ✅
+- product_pnl_category_list → enterprise.dim_subscription_history ✅
+- product_pnl_line_list → enterprise.dim_subscription_history ✅
+- product_pnl_category_qty → enterprise.dim_subscription_history ✅
+- customer_type_name → analytic_feature.customer_type_history ✅
+- customer_type_reason_desc → analytic_feature.customer_type_history ✅
+- reseller_type_id → dp_enterprise.dim_reseller ✅
+- reseller_type_name → dp_enterprise.dim_reseller ✅
+- customer_merge_mst_date → analytic_feature.shopper_merge ✅
+- customer_acquisition_channel_name → ecomm_mart.bill_line_traffic_ext ✅
+- customer_acquisition_mst_date → enterprise.dim_new_acquisition_shopper ✅
+- customer_acquisition_bill_id → enterprise.dim_new_acquisition_shopper ✅
+
+---
+
+## Issues Found and Fixes Applied
+
+| # | Issue | Severity | Fix Applied |
+|---|---|---|---|
+| 1 | `life_cycle_to_dim_bill_line_purchase_attribution`: `to_columns: [bill_id]` is not unique in `dim_bill_line_purchase_attribution` (composite PK = [bill_id, bill_line_num]); joining without dedup guard causes fan-out | WARNING | Added `ai_context` to relationship: "FAN-OUT GUARD REQUIRED: … Always apply ROW_NUMBER() OVER (PARTITION BY bill_id ORDER BY bill_line_num DESC) = 1 before joining to avoid multiplying fact rows." |
+| 2 | `life_cycle_to_dim_bill_fraud_history`: `to_columns: [bill_id]` is not unique in `dim_bill_fraud_history` (SCD2; composite PK = [bill_id, effective_start_mst_ts]); joining without guard causes fan-out | WARNING | Added `ai_context` to relationship: "FAN-OUT GUARD REQUIRED: … Filter current_record_flag = true, or use SELECT DISTINCT bill_id, before joining to avoid multiplying fact rows." |
+
+**Note:** Both issues were previously documented only at the model-level `ai_context.instructions`. The fix brings the warning directly to the relationship level. No structural defects required removal of entities.
+
+---
+
+## Items Removed Due to Lack of Evidence
+
+None. All datasets, fields, relationships, and metrics are traceable to PySpark source code, DDL, DQ constraints, lake catalog entries, or analyze.md lineage tables.
+
+---
+
+## Final Counts
+
+| Entity | Count |
+|---|---|
+| Semantic models | 1 |
+| Datasets | 5 |
+| Fields (customer_life_cycle) | 35 |
+| Fields (shopper_acquisition) | 17 |
+| Fields (dim_country) | 28 |
+| Fields (dim_bill_line_purchase_attribution) | 9 |
+| Fields (dim_bill_fraud_history) | 11 |
+| **Total fields** | **100** |
+| Relationships | 4 |
+| Metrics | 3 |
+| custom_extensions | 1 (GODADDY vendor) |
+
 
 **The agent's final response to the user was:**
 Validation complete. Here is a summary of what was done:
 
----
-
 ## Validation Summary — `customer360_customer_life_cycle_analytics`
 
-### Results: **PASS** (all three validation categories)
+**All four validation categories PASS:**
 
-**Structural — PASS**
-All 12 OSI spec v0.2.0.dev0 structural rules satisfied: correct root shape, 6 datasets with `name`/`source`, 134 fields with `name`/`expression.dialects`, 5 metrics with aggregates, 5 relationships with matching `from_columns`/`to_columns` lengths, scalar-only field expressions, unique names throughout, and valid JSON in `custom_extensions.data`.
+| Check | Result |
+|---|---|
+| Structural | **PASS** |
+| Reference | **PASS** |
+| Accuracy | **PASS** |
+| Provenance | **PASS** |
 
-**Reference — PASS**
-All relationship `from`/`to` names resolve to existing dataset names. All join columns exist as fields in their respective datasets. All 6 dataset `source` values are confirmed lake tables (paths verified in `repos/lake/`). All `primary_key` columns exist as fields.
+### Two fixes applied to `SEMANTIC_MODEL.yaml`
 
-**Accuracy — PASS (1 issue fixed in-place)**
-- **Fixed:** `ai_context.instructions` said `customer_state_enum` has "five states" but gather.md DDL and the field's own description document six states: `active`, `new`, `churned`, `reactivated`, `merged`, `intraday`. Changed to "six states" and added `new`.
-- No items removed — all 6 datasets, 134 fields, 5 relationships, and 5 metrics have verified evidence in PySpark source, lake DDLs, Confluence, or Alation.
+Both were `WARNING`-level issues (not structural failures), both pre-documented at the model-level `ai_context.instructions` but missing from the relationship definitions themselves:
 
-**Completeness — PASS**
-Target table present; 5 key dimensions included; 8 omitted tables justified; all date/timestamp fields carry `is_time: true`; 5 metrics present; partition column flagged.
+1. **`life_cycle_to_dim_bill_line_purchase_attribution`** — `to_columns: [bill_id]` is not unique in the dimension (composite PK `[bill_id, bill_line_num]`). Added `ai_context` requiring `ROW_NUMBER() OVER (PARTITION BY bill_id ORDER BY bill_line_num DESC) = 1` before joining.
 
-**Final counts:** 6 datasets · 134 fields · 5 relationships · 5 metrics
+2. **`life_cycle_to_dim_bill_fraud_history`** — `to_columns: [bill_id]` is not unique in the SCD2 dimension (composite PK `[bill_id, effective_start_mst_ts]`). Added `ai_context` requiring `current_record_flag = true` or `SELECT DISTINCT bill_id` before joining.
+
+### No entities removed
+All 100 fields, 5 datasets, 4 relationships, and 3 metrics are fully backed by PySpark source code, DDL, DQ constraints, or lake catalog evidence.
+
+### Final counts
+- Datasets: 5 | Fields: 100 | Relationships: 4 | Metrics: 3

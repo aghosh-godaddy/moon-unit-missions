@@ -160,11 +160,99 @@ ai_context:
 
 ```yaml
 custom_extensions:
-  - vendor_name: GODADDY
-    data: '{"lake_table_path": "customer360/customer-life-cycle-vw", "dag_name": "customer_life_cycle_dag"}'
+  - vendor_name: GoDaddy
+    data: |
+      {
+        "lake_table_path": "customer360/customer-life-cycle-vw",
+        "dag_name": "customer_life_cycle_dag"
+      }
 ```
 
-`data` must be a **JSON string**, not a nested YAML object.
+`data` must be a **JSON string**, not a nested YAML object. For readability, use a YAML
+literal block scalar (`data: |`) with pretty-printed JSON at 2-space indent — when parsed,
+the value is still a plain string (same as a single-quoted JSON literal).
+
+### GODADDY vendor schema
+
+Operational keys (always include when known):
+
+| Key | Description |
+|-----|-------------|
+| `lake_table_path` | Hyphenated lake registry path (e.g. `customer360/customer-life-cycle-vw`) |
+| `pyspark_path` | Relative path to PySpark script in source repo |
+| `dag_name` | Airflow DAG name |
+| `refresh_cadence` | Schedule (e.g. `daily at 07:20 MST`) |
+| `sla_delivery` | SLA delivery time if known |
+| `data_tier` | Lake data tier (integer) |
+| `partition_key` | Partition column name |
+| `domain` | Business domain |
+| `organization` | Owning organization |
+
+Provenance keys (sourced from `PROVENANCE.json` written in analyze stage):
+
+| Key | Description |
+|-----|-------------|
+| `pipeline_lineage.intermediate_tables` | Staging/driver tables not in lake catalog |
+| `pipeline_lineage.transitive_sources` | Upstream lake tables reached via drivers; includes `materialized_in_fields` |
+| `pipeline_lineage.materialized_direct_reads` | Direct-read lake tables denormalized onto the fact |
+| `pipeline_lineage.legacy_sources` | Legacy S3 paths or branches with equivalents |
+| `query_guards.grain` | What one row represents |
+| `query_guards.partition_filter` | Required partition column for point-in-time queries |
+| `query_guards.primary_key_notes` | PK caveats (e.g. composite key, nullable columns) |
+
+Example with provenance:
+
+```yaml
+custom_extensions:
+  - vendor_name: GoDaddy
+    data: |
+      {
+        "lake_table_path": "customer360/customer-life-cycle-vw",
+        "pyspark_path": "customer360/customer-metrics/src/pyspark/customer_life_cycle.py",
+        "dag_name": "customer-life-cycle",
+        "refresh_cadence": "daily at 07:20 MST",
+        "pipeline_lineage": {
+          "intermediate_tables": [
+            {
+              "table": "customer_core_conformed.active_customer_stg",
+              "role": "staging",
+              "upstream_pyspark": "..."
+            }
+          ],
+          "transitive_sources": [
+            {
+              "table": "enterprise.dim_subscription_history",
+              "via": "customer_core_conformed.customer_active_subscription_detail_driver",
+              "materialized_in_fields": ["active_paid_subscription_list"]
+            }
+          ],
+          "materialized_direct_reads": [
+            {
+              "table": "analytic_feature.customer_type_history",
+              "materialized_in_fields": ["customer_type_name"]
+            }
+          ],
+          "legacy_sources": []
+        },
+        "query_guards": {
+          "grain": "one row per (shopper_id, partition_eval_mst_date)",
+          "partition_filter": "partition_eval_mst_date",
+          "primary_key_notes": "Composite PK; customer_id may be null"
+        }
+      }
+```
+
+### PROVENANCE.json (analyze stage artifact)
+
+Written alongside `RESOLVED_TARGET.json`. Generate and validate stages consume it to
+preserve do-not-claim lineage without adding non-joinable OSI datasets.
+
+Top-level keys: `grain`, `primary_key_notes`, `partition_filter`, `intermediate_tables`,
+`transitive_sources`, `materialized_direct_reads`, `excluded_dimensions`, `array_fields`,
+`legacy_sources`, `do_not_claim`.
+
+Each `do_not_claim` entry has `item`, `reason`, and `preserve_as` (`field_description`,
+`ai_context`, and/or `custom_extensions`).
 
 ---
 
