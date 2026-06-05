@@ -353,7 +353,7 @@ plan:
                   synonyms: [<terms>]
 
             custom_extensions:
-              - vendor_name: GoDaddy
+              - vendor_name: GODADDY
                 data: |
                   {
                     "lake_table_path": "<path>",
