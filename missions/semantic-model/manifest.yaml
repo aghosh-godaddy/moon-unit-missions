@@ -194,11 +194,13 @@ plan:
         - Target table resolution with evidence
         - Lineage resolution table (intermediate → lake)
         - **Dataset classification table**: | Lake Table | OSI Dataset Name | Role (fact/dim) | source | primary_key |
+        - **Materialized direct-reads table**: | Lake Table | materialized_in_fields | evidence | — lake tables read by the PySpark job whose values are fully denormalized onto the fact (no join key back to source)
+        - **Excluded dimensions table**: | Lake Table | reason | fields_on_fact | — direct-read lake tables NOT included as OSI datasets (e.g. no FK in fact)
         - **Relationship table**: | name | from | to | from_columns | to_columns | evidence |
         - **Field inventory per dataset**: columns, types, is_time, descriptions
         - **Metrics table**: | name | expression | description | evidence |
         - **Semantic model metadata**: name, description, ai_context draft
-        - "Do not claim" list: items tempting but not proven
+        - **Do-not-claim table**: | item | reason | preserve_as | — items that must NOT become OSI datasets, relationships, or metrics; `preserve_as` is one or more of: `field_description`, `ai_context`, `custom_extensions`
 
         ## Step 10: Write RESOLVED_TARGET.json (required)
         Create `RESOLVED_TARGET.json` in workspace root:
@@ -213,6 +215,70 @@ plan:
           "evidence": ["file/line references"]
         }
         ```
+
+        ## Step 11: Write PROVENANCE.json (required)
+        Create `PROVENANCE.json` in workspace root. This is the machine-readable contract for
+        preserving do-not-claim lineage in the OSI YAML without adding non-joinable datasets.
+        See `docs/osi-spec-reference.md` for the GODADDY custom_extensions schema.
+
+        ```json
+        {
+          "grain": "one row per (shopper_id, partition_eval_mst_date)",
+          "primary_key_notes": "Composite PK; customer_id is not unique and may be null",
+          "partition_filter": "partition_eval_mst_date",
+          "intermediate_tables": [
+            {
+              "table": "customer_core_conformed.active_customer_stg",
+              "role": "staging",
+              "upstream_pyspark": "customer360/active-customer/src/pyspark/active_customer_stg.py"
+            }
+          ],
+          "transitive_sources": [
+            {
+              "table": "enterprise.dim_subscription_history",
+              "via": "customer_core_conformed.customer_active_subscription_detail_driver",
+              "materialized_in_fields": ["active_paid_subscription_list"]
+            }
+          ],
+          "materialized_direct_reads": [
+            {
+              "table": "analytic_feature.customer_type_history",
+              "materialized_in_fields": ["customer_type_name", "customer_type_reason_desc"]
+            }
+          ],
+          "excluded_dimensions": [
+            {
+              "table": "analytic_feature.customer_fraud",
+              "reason": "no_join_key_in_fact",
+              "fields_on_fact": ["customer_fraud_flag", "customer_fraud_mst_date"]
+            }
+          ],
+          "array_fields": [
+            {
+              "field": "active_paid_subscription_list",
+              "scalar_proxy": "product_pnl_category_qty",
+              "note": "not suitable for OSI aggregate metrics; use scalar proxy fields instead"
+            }
+          ],
+          "legacy_sources": [
+            {
+              "path": "s3://gd-ckpetlbatch-prod-analytic/analytic/ads_bill_line_ext/",
+              "equivalent": "ecomm_mart.bill_line_traffic_ext",
+              "condition": "pre-2022-08 partitions only"
+            }
+          ],
+          "do_not_claim": [
+            {
+              "item": "customer_core_conformed.active_customer_stg as OSI dataset",
+              "reason": "intermediate staging table not in lake catalog",
+              "preserve_as": "custom_extensions"
+            }
+          ]
+        }
+        ```
+
+        Use empty arrays `[]` for sections with no entries. Every do-not-claim item from Step 9
+        must appear in `do_not_claim` with a `preserve_as` value.
 
     - name: generate
       model: claude-sonnet-4-6
@@ -230,6 +296,7 @@ plan:
         - `gather.md`
         - `analyze.md`
         - `RESOLVED_TARGET.json`
+        - `PROVENANCE.json` — machine-readable lineage and do-not-claim preservation contract
 
         USER NOTES override Confluence/Alation — but NEVER override PySpark/DAG code.
 
@@ -286,8 +353,25 @@ plan:
                   synonyms: [<terms>]
 
             custom_extensions:
-              - vendor_name: GODADDY
-                data: '{"lake_table_path": "<path>", "pyspark_path": "<path>", "dag_name": "<name>", "refresh_cadence": "<cadence>"}'
+              - vendor_name: GoDaddy
+                data: |
+                  {
+                    "lake_table_path": "<path>",
+                    "pyspark_path": "<path>",
+                    "dag_name": "<name>",
+                    "refresh_cadence": "<cadence>",
+                    "pipeline_lineage": {
+                      "intermediate_tables": [],
+                      "transitive_sources": [],
+                      "materialized_direct_reads": [],
+                      "legacy_sources": []
+                    },
+                    "query_guards": {
+                      "grain": "<grain>",
+                      "partition_filter": "<col>",
+                      "primary_key_notes": "<notes>"
+                    }
+                  }
         ```
 
         ## Generation rules (non-negotiable)
@@ -301,8 +385,26 @@ plan:
         8. Set `dimension.is_time: true` on date/timestamp/partition columns
         9. Relationships must have matching column counts in from/to
         10. Only include metrics with evidence from analyze.md
-        11. `custom_extensions.data` must be a JSON **string**, not nested YAML
+        11. `custom_extensions.data` must be a JSON **string**, not nested YAML — use a
+            YAML literal block scalar (`data: |`) with pretty-printed JSON at 2-space indent
+            (not a single-line minified string)
         12. Omit fields/relationships/metrics you cannot support with evidence
+        13. For every field listed in `PROVENANCE.json` → `transitive_sources` or
+            `materialized_direct_reads`, append upstream provenance to the fact field
+            `description` (e.g. "Derived from enterprise.dim_subscription_history via
+            customer_active_subscription_detail_driver; not directly joinable")
+        14. For every entry in `PROVENANCE.json` → `array_fields`, document in the field
+            `description` and mention the field (and any `scalar_proxy`) in
+            `ai_context.instructions` — do not define metrics that unnest or aggregate arrays
+        15. Expand `custom_extensions.data` to include `pipeline_lineage` (intermediate_tables,
+            transitive_sources, materialized_direct_reads, legacy_sources) and `query_guards`
+            (grain, partition_filter, primary_key_notes) sourced from `PROVENANCE.json`
+        16. `ai_context.instructions` must include: grain, required partition filter,
+            primary-key caveats, array-field warnings, and excluded join targets with guidance
+            to use denormalized fact columns instead
+        17. Every item in `PROVENANCE.json` → `do_not_claim` must appear in at least one of:
+            field `description`, `ai_context`, or `custom_extensions` — never as a dataset,
+            relationship, or metric
 
         ## Step 3: Append summary to generate.md
         Append:
@@ -311,6 +413,8 @@ plan:
         - Field count per dataset
         - Relationship count
         - Metric count
+        - Provenance fields enriched (count and list)
+        - Do-not-claim items preserved (and where: description / ai_context / custom_extensions)
         - Items omitted due to insufficient evidence
         - Key sources used
 
@@ -333,6 +437,7 @@ plan:
         - `gather.md`
         - `analyze.md`
         - `RESOLVED_TARGET.json`
+        - `PROVENANCE.json`
         - `SEMANTIC_MODEL.yaml`
 
         ## Step 2: Structural validation
@@ -369,10 +474,26 @@ plan:
         - Time dimensions should have `is_time: true`
         - At least one metric if analyze.md identified any
 
+        ## Step 5b: Provenance validation
+        Using `PROVENANCE.json` and `docs/osi-spec-reference.md`:
+        - `PROVENANCE.json` exists; `custom_extensions.data` parses as valid JSON
+        - When `PROVENANCE.json` lists intermediate or transitive tables,
+          `custom_extensions.data` must contain a `pipeline_lineage` object
+        - Every field in `transitive_sources[].materialized_in_fields` and
+          `materialized_direct_reads[].materialized_in_fields` has a matching fact field
+          whose `description` mentions the upstream table or pipeline (fix in-place if missing)
+        - No item from `do_not_claim` appears as a dataset `source`, relationship endpoint,
+          or metric expression
+        - Fields listed in `array_fields` are not referenced in metric expressions
+        - `ai_context.instructions` includes grain, partition filter, and PK caveats from
+          `query_guards`
+        Fix any missing provenance in-place in `SEMANTIC_MODEL.yaml`.
+
         ## Step 6: Append report to validate.md
         Append:
         - Semantic model name
-        - PASS/FAIL for structural, reference, and accuracy validation
+        - PASS/FAIL for structural, reference, accuracy, and **provenance** validation
+        - Provenance fields enriched (list)
         - Issues found and how they were fixed
         - Items removed due to lack of evidence
         - Final counts: datasets, fields, relationships, metrics

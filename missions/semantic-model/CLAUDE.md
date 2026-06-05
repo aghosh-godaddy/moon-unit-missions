@@ -36,12 +36,28 @@ be used **only when consistent** with the code.
   high confidence, omit it and document the gap in analyze.md / validate.md.
 - **ANSI_SQL dialect only** for all field and metric expressions.
 
+## Provenance preservation
+
+Items on the analyze **do-not-claim** list must **not** become OSI datasets,
+relationships, or metrics — but their lineage must **not** be dropped either.
+
+The analyze stage writes `PROVENANCE.json` (alongside `RESOLVED_TARGET.json`).
+Generate and validate consume it to preserve excluded lineage via:
+
+- **Field descriptions** — upstream source for materialized/transitive columns
+- **`ai_context.instructions`** — grain, partition filter, PK caveats, array-field warnings
+- **`custom_extensions.data`** — `pipeline_lineage` and `query_guards` JSON (GODADDY vendor)
+
+Prefer **scalar proxy metrics** (e.g. `product_pnl_category_qty`) over array unnesting.
+See `docs/osi-spec-reference.md` for the GODADDY custom_extensions schema.
+
 ## OSI output contract
 
 The final deliverable is `SEMANTIC_MODEL.yaml` in the workspace root, copied by
 `run.sh` to:
-- `output/<id>/<name>/<schema>.<table>.yaml` (audit trail)
-- `repos/<source-repo>/<...>/src/semantics/<schema>.<table>.yaml` (source repo placement, workspace preserved on success)
+- `output/<id>/<name>/<schema>.<table>.yaml` (audit trail in moon-unit-missions)
+- `repos/<source-repo>/<...>/src/semantics/<schema>.<table>.yaml` (source repo placement)
+- A pull request opened against the **PySpark source repo** (e.g. `gdcorp-dna/dof-ecomm-customer`), not moon-unit-missions
 
 Structure reference: `docs/osi-spec-reference.md`
 
@@ -70,7 +86,8 @@ semantic_model:
   pre-writes a header, the agent appends content, the framework appends a footer.
 - The final OSI deliverable is written into the workspace as `SEMANTIC_MODEL.yaml`
   and copied out by `run.sh` to the output directory and into `src/semantics/`
-  alongside `dag/` and `pyspark/` in the cloned source repo.
+  alongside `dag/` and `pyspark/` in the cloned source repo. On success, `run.sh`
+  commits, pushes, and opens a PR against the PySpark source repo.
 
 ## Adding/updating configs
 
@@ -87,3 +104,4 @@ The manifest uses `claude-sonnet-4-6` for all stages.
 - Run `./run.sh` proactively; the user runs it after reviewing configs.
 - Commit `.env.local`, `.workspace/`, or `.mu-run.log` (all gitignored).
 - Use intermediate/staging tables as OSI dataset `source` values.
+- Drop do-not-claim lineage — always preserve it in descriptions, ai_context, or custom_extensions.

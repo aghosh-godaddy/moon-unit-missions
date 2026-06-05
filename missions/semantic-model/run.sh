@@ -2,8 +2,9 @@
 # Launch the OSI Semantic Model Generation mission
 #
 # Usage:
-#   ./run.sh <identifier> <name>   # Uses config/<identifier>/<name>.yaml
-#   ./run.sh path/to/config.yaml   # Direct config file path
+#   ./run.sh <identifier> <name>           # Uses config/<identifier>/<name>.yaml
+#   ./run.sh path/to/config.yaml           # Direct config file path
+#   ./run.sh --pr-only <identifier> <name> # Copy output YAML to source repo and open PR
 #
 # Output:
 #   output/<identifier>/<name>/
@@ -15,7 +16,7 @@
 #     RESOLVED_TARGET.json
 #     <schema>.<table>.yaml
 #     .workspace/repos/<repo>/<...>/src/semantics/<schema>.<table>.yaml
-#
+#   Pull request opened against the PySpark source repo (not moon-unit-missions)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,8 +25,11 @@ MANIFEST_FILE="$SCRIPT_DIR/.manifest.generated.yaml"
 OUTPUT_BASE="$SCRIPT_DIR/output"
 
 usage() {
-  echo "Usage: ./run.sh <identifier> <name>" >&2
-  echo "       ./run.sh path/to/config.yaml" >&2
+  echo "Usage: ./run.sh [--pr-only] <identifier> <name>" >&2
+  echo "       ./run.sh [--pr-only] path/to/config.yaml" >&2
+  echo "" >&2
+  echo "Options:" >&2
+  echo "  --pr-only  Copy semantic model from output/ to source repo and open PR (skip mission)" >&2
   echo "" >&2
   echo "Available configs:" >&2
   find "$SCRIPT_DIR/config" -name "*.yaml" -type f 2>/dev/null | sort | while read -r f; do
@@ -35,6 +39,17 @@ usage() {
     echo "  $ident $name" >&2
   done
 }
+
+PR_ONLY=false
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --pr-only) PR_ONLY=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]}"
 
 # Resolve config file from arguments
 if [[ $# -ge 2 ]]; then
@@ -57,26 +72,30 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   exit 1
 fi
 
-# Validate prerequisites
-if ! command -v mu &>/dev/null; then
-  echo "Error: mu CLI not found. Install it first." >&2
-  exit 1
+# Validate prerequisites (full mission only)
+if ! $PR_ONLY; then
+  if ! command -v mu &>/dev/null; then
+    echo "Error: mu CLI not found. Install it first." >&2
+    exit 1
+  fi
+
+  if ! docker info &>/dev/null 2>&1; then
+    echo "Error: Docker is not running. Start it with 'colima start'." >&2
+    exit 1
+  fi
 fi
 
-if ! docker info &>/dev/null 2>&1; then
-  echo "Error: Docker is not running. Start it with 'colima start'." >&2
-  exit 1
-fi
-
-# Load environment variables from .env.local file
+# Load environment variables from .env.local file (full mission only)
 ENV_FILE="$SCRIPT_DIR/.env.local"
-if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  source "$ENV_FILE"
-  set +a
-else
-  echo "Error: .env.local not found at $ENV_FILE" >&2
-  exit 1
+if ! $PR_ONLY; then
+  if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    source "$ENV_FILE"
+    set +a
+  else
+    echo "Error: .env.local not found at $ENV_FILE" >&2
+    exit 1
+  fi
 fi
 
 if [[ -z "${AWS_PROFILE:-}" ]]; then
@@ -244,7 +263,263 @@ parse_github_blob_url "$PYSPARK_URL"
 
 # Set output directory
 OUTPUT_DIR="$OUTPUT_BASE/${IDENTIFIER}/${NAME}"
+WORKSPACE_DIR="$OUTPUT_DIR/.workspace"
 mkdir -p "$OUTPUT_DIR"
+
+collect_artifact() {
+  local src="$1" dst="$2"
+  [[ -f "$src" ]] || return 1
+  cp "$src" "$dst"
+}
+
+copy_stage_outputs() {
+  collect_artifact "$WORKSPACE_DIR/INPUT.md"    "$OUTPUT_DIR/INPUT.md"    || true
+  collect_artifact "$WORKSPACE_DIR/gather.md"   "$OUTPUT_DIR/gather.md"   || true
+  collect_artifact "$WORKSPACE_DIR/analyze.md"  "$OUTPUT_DIR/analyze.md"  || true
+  collect_artifact "$WORKSPACE_DIR/generate.md" "$OUTPUT_DIR/generate.md" || true
+  collect_artifact "$WORKSPACE_DIR/validate.md" "$OUTPUT_DIR/validate.md" || true
+  collect_artifact "$WORKSPACE_DIR/RESOLVED_TARGET.json" "$OUTPUT_DIR/RESOLVED_TARGET.json" || true
+}
+
+resolve_output_filename() {
+  local resolved="$OUTPUT_DIR/RESOLVED_TARGET.json"
+  if [[ -f "$resolved" ]]; then
+    local schema table_u
+    schema=$(node -e "const j=require('$resolved'); console.log(j.schema||'');" 2>/dev/null || true)
+    table_u=$(node -e "const j=require('$resolved'); console.log(j.table_underscore||'');" 2>/dev/null || true)
+    if [[ -n "$schema" && -n "$table_u" ]]; then
+      echo "${schema}.${table_u}.yaml"
+      return
+    fi
+  fi
+  echo "unknown.unknown.yaml"
+}
+
+find_output_semantic_file() {
+  local out_name="$1"
+  local candidate="$OUTPUT_DIR/$out_name"
+  if [[ -f "$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+  local legacy="${candidate%.yaml}-osi-model.yaml"
+  if [[ -f "$legacy" ]]; then
+    echo "$legacy"
+    return 0
+  fi
+  return 1
+}
+
+semantics_rel_path() {
+  local out_name="$1"
+  local src_parent
+  src_parent=$(dirname "$(dirname "$SOURCE_PATH")")
+  echo "${src_parent}/semantics/${out_name}"
+}
+
+semantics_abs_path() {
+  local out_name="$1"
+  echo "$WORKSPACE_DIR/repos/$SOURCE_REPO/$(semantics_rel_path "$out_name")"
+}
+
+read_github_token() {
+  local token=""
+  if [[ -f "$HOME/.config/mu/mu.env" ]]; then
+    token=$(grep -E '^MOONUNIT_GITHUB_TOKEN=' "$HOME/.config/mu/mu.env" | head -1 | sed 's/^MOONUNIT_GITHUB_TOKEN=//' \
+      | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).token||'')}catch{}})" 2>/dev/null || true)
+  fi
+  if [[ -z "$token" ]] && command -v gh &>/dev/null; then
+    token=$(gh auth token 2>/dev/null || true)
+  fi
+  echo "$token"
+}
+
+find_existing_pr_url() {
+  local branch="$1"
+  local token="$2"
+  local url=""
+
+  if command -v gh &>/dev/null; then
+    url=$(GH_TOKEN="$token" gh pr list \
+      --repo "${SOURCE_ORG}/${SOURCE_REPO}" \
+      --head "${SOURCE_ORG}:${branch}" \
+      --state open \
+      --json url \
+      --jq '.[0].url // empty' 2>/dev/null || true)
+    if [[ -z "$url" ]]; then
+      url=$(GH_TOKEN="$token" gh pr list \
+        --repo "${SOURCE_ORG}/${SOURCE_REPO}" \
+        --head "$branch" \
+        --state open \
+        --json url \
+        --jq '.[0].url // empty' 2>/dev/null || true)
+    fi
+  fi
+
+  if [[ -z "$url" ]]; then
+    url=$(curl -sS \
+      -H "Authorization: Bearer ${token}" \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/${SOURCE_ORG}/${SOURCE_REPO}/pulls?head=${SOURCE_ORG}:${branch}&state=open" \
+      | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);console.log((j[0]&&j[0].html_url)||'')}catch{}})" 2>/dev/null || true)
+  fi
+
+  echo "$url"
+}
+
+ensure_source_repo_clone() {
+  local repo_dir="$WORKSPACE_DIR/repos/$SOURCE_REPO"
+  if [[ -d "$repo_dir/.git" ]]; then
+    return 0
+  fi
+  echo "[*] Cloning ${SOURCE_REPO_URL}..."
+  mkdir -p "$WORKSPACE_DIR/repos"
+  git clone --quiet "$SOURCE_REPO_URL" "$repo_dir"
+}
+
+create_source_repo_pr() {
+  local source_file="$1"
+  local out_name="$2"
+  local repo_dir="$WORKSPACE_DIR/repos/$SOURCE_REPO"
+  local semantics_rel branch schema table_u token pr_url existing_pr
+
+  if [[ ! -f "$source_file" ]]; then
+    echo "[!] Semantic model file not found: $source_file" >&2
+    return 1
+  fi
+
+  ensure_source_repo_clone
+
+  if [[ ! -d "$repo_dir/.git" ]]; then
+    echo "[!] Source repo clone not found — skipping PR" >&2
+    return 1
+  fi
+
+  semantics_rel=$(semantics_rel_path "$out_name")
+  schema=$(node -e "const j=require('$OUTPUT_DIR/RESOLVED_TARGET.json'); console.log(j.schema||'');" 2>/dev/null || true)
+  table_u=$(node -e "const j=require('$OUTPUT_DIR/RESOLVED_TARGET.json'); console.log(j.table_underscore||'');" 2>/dev/null || true)
+  branch="semantic-model/${schema}.${table_u}"
+
+  token=$(read_github_token)
+  if [[ -z "$token" ]]; then
+    echo "[!] No GitHub token available — skipping PR (set MOONUNIT_GITHUB_TOKEN or run gh auth login)" >&2
+    return 1
+  fi
+
+  existing_pr=$(find_existing_pr_url "$branch" "$token")
+
+  git -C "$repo_dir" fetch origin "$SOURCE_REF" --quiet 2>/dev/null || true
+  git -C "$repo_dir" checkout "$SOURCE_REF" --quiet 2>/dev/null \
+    || git -C "$repo_dir" checkout -B "$SOURCE_REF" "origin/$SOURCE_REF" --quiet
+  git -C "$repo_dir" checkout -B "$branch" --quiet
+
+  mkdir -p "$repo_dir/$(dirname "$semantics_rel")"
+  cp "$source_file" "$repo_dir/$semantics_rel"
+  git -C "$repo_dir" add "$semantics_rel"
+
+  if git -C "$repo_dir" diff --cached --quiet; then
+    if [[ -n "$existing_pr" ]]; then
+      echo "$existing_pr"
+      return 0
+    fi
+    echo "[!] No changes to commit — skipping PR" >&2
+    return 1
+  fi
+
+  git -C "$repo_dir" \
+    -c user.email="${MOONUNIT_GIT_EMAIL:-moonunit@gdcorp-dna.com}" \
+    -c user.name="${MOONUNIT_GIT_NAME:-Moon Unit}" \
+    commit -m "Add semantic model for ${schema}.${table_u}" --quiet
+
+  git -C "$repo_dir" push --force \
+    "https://x-access-token:${token}@github.com/${SOURCE_ORG}/${SOURCE_REPO}.git" \
+    "$branch" --quiet 2>&1 | grep -v '^remote:' >&2 || true
+
+  if [[ -n "$existing_pr" ]]; then
+    echo "$existing_pr"
+    return 0
+  fi
+
+  if command -v gh &>/dev/null; then
+    pr_url=$(GH_TOKEN="$token" gh pr create \
+      --repo "${SOURCE_ORG}/${SOURCE_REPO}" \
+      --head "$branch" \
+      --base "$SOURCE_REF" \
+      --title "Add OSI semantic model for ${schema}.${table_u}" \
+      --body "Adds \`${semantics_rel}\` generated by the moon-unit-missions semantic-model mission." 2>/dev/null || true)
+  fi
+
+  if [[ -z "${pr_url:-}" ]]; then
+    pr_url=$(curl -sS -X POST \
+      -H "Authorization: Bearer ${token}" \
+      -H "Accept: application/vnd.github+json" \
+      -H "Content-Type: application/json" \
+      -d "$(node -e "
+        console.log(JSON.stringify({
+          title: 'Add OSI semantic model for ${schema}.${table_u}',
+          head: '${branch}',
+          base: '${SOURCE_REF}',
+          body: 'Adds \`${semantics_rel}\` generated by the moon-unit-missions semantic-model mission.'
+        }))
+      ")" \
+      "https://api.github.com/repos/${SOURCE_ORG}/${SOURCE_REPO}/pulls" \
+      | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);console.log(j.html_url||'')}catch{}})" 2>/dev/null || true)
+  fi
+
+  if [[ -n "${pr_url:-}" ]]; then
+    echo "$pr_url"
+    return 0
+  fi
+
+  echo "[!] Branch pushed but PR creation failed — open manually: ${SOURCE_ORG}/${SOURCE_REPO} compare ${SOURCE_REF}...${branch}" >&2
+  return 1
+}
+
+run_pr_only_mode() {
+  local out_name source_file semantics_path pr_url
+
+  echo "=== Semantic Model PR-only ==="
+  echo "Config:  $CONFIG_FILE"
+  echo "Target:  ${IDENTIFIER}/${NAME}"
+  echo "Repo:    ${SOURCE_ORG}/${SOURCE_REPO}@${SOURCE_REF}"
+  echo "Output:  $OUTPUT_DIR"
+  echo ""
+
+  if [[ ! -f "$OUTPUT_DIR/RESOLVED_TARGET.json" ]]; then
+    echo "Error: RESOLVED_TARGET.json not found in $OUTPUT_DIR" >&2
+    echo "Run the full mission first: ./run.sh ${IDENTIFIER} ${NAME}" >&2
+    exit 1
+  fi
+
+  out_name=$(resolve_output_filename)
+  if ! source_file=$(find_output_semantic_file "$out_name"); then
+    echo "Error: Semantic model YAML not found in $OUTPUT_DIR (expected ${out_name})" >&2
+    exit 1
+  fi
+
+  semantics_path=$(semantics_abs_path "$out_name")
+  pr_url=$(create_source_repo_pr "$source_file" "$out_name" || true)
+
+  echo ""
+  echo "═══════════════════════════════════════════════════"
+  if [[ -n "$pr_url" ]]; then
+    echo " ✓ PR READY"
+    echo " Semantics: $semantics_path"
+    echo " PR: $pr_url"
+  else
+    echo " ✗ PR STEP FAILED"
+    echo " Semantics: $semantics_path"
+    echo " Check errors above (token, push permissions, or no changes)."
+  fi
+  echo "═══════════════════════════════════════════════════"
+
+  [[ -n "$pr_url" ]]
+}
+
+if $PR_ONLY; then
+  run_pr_only_mode
+  exit $?
+fi
 
 # Assemble generated manifest with dynamic input content + source repo URL
 INPUT_CONTENT=$(generate_input_content)
@@ -278,7 +553,6 @@ if ! mu lint "$MANIFEST_FILE" >/dev/null 2>&1; then
 fi
 
 MU_LOG="$SCRIPT_DIR/.mu-run.log"
-WORKSPACE_DIR="$OUTPUT_DIR/.workspace"
 rm -f "$MU_LOG"
 rm -rf "$WORKSPACE_DIR"
 rm -f "$OUTPUT_DIR"/{INPUT,gather,analyze,generate,validate}.md \
@@ -362,54 +636,16 @@ done
 kill "$TAIL_PID" 2>/dev/null || true
 wait "$TAIL_PID" 2>/dev/null || true
 
-collect_artifact() {
-  local src="$1" dst="$2"
-  [[ -f "$src" ]] || return 1
-  cp "$src" "$dst"
-}
-
-copy_stage_outputs() {
-  collect_artifact "$WORKSPACE_DIR/INPUT.md"    "$OUTPUT_DIR/INPUT.md"    || true
-  collect_artifact "$WORKSPACE_DIR/gather.md"   "$OUTPUT_DIR/gather.md"   || true
-  collect_artifact "$WORKSPACE_DIR/analyze.md"  "$OUTPUT_DIR/analyze.md"  || true
-  collect_artifact "$WORKSPACE_DIR/generate.md" "$OUTPUT_DIR/generate.md" || true
-  collect_artifact "$WORKSPACE_DIR/validate.md" "$OUTPUT_DIR/validate.md" || true
-  collect_artifact "$WORKSPACE_DIR/RESOLVED_TARGET.json" "$OUTPUT_DIR/RESOLVED_TARGET.json" || true
-}
-
-resolve_output_filename() {
-  local resolved="$OUTPUT_DIR/RESOLVED_TARGET.json"
-  if [[ -f "$resolved" ]]; then
-    local schema table_u
-    schema=$(node -e "const j=require('$resolved'); console.log(j.schema||'');" 2>/dev/null || true)
-    table_u=$(node -e "const j=require('$resolved'); console.log(j.table_underscore||'');" 2>/dev/null || true)
-    if [[ -n "$schema" && -n "$table_u" ]]; then
-      echo "${schema}.${table_u}.yaml"
-      return
-    fi
-  fi
-  echo "unknown.unknown.yaml"
-}
-
-copy_semantic_model_to_repo() {
-  local out_name="$1"
-  local src_parent semantics_dir
-  # SOURCE_PATH is <domain>/<project>/src/pyspark/<file>.py
-  src_parent=$(dirname "$(dirname "$SOURCE_PATH")")
-  semantics_dir="$WORKSPACE_DIR/repos/$SOURCE_REPO/$src_parent/semantics"
-  mkdir -p "$semantics_dir"
-  cp "$WORKSPACE_DIR/SEMANTIC_MODEL.yaml" "$semantics_dir/$out_name"
-  echo "$semantics_dir/$out_name"
-}
-
 if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
   copy_stage_outputs
 
   SEMANTICS_PATH=""
+  PR_URL=""
   if [[ -f "$WORKSPACE_DIR/SEMANTIC_MODEL.yaml" ]]; then
     OUT_NAME=$(resolve_output_filename)
     cp "$WORKSPACE_DIR/SEMANTIC_MODEL.yaml" "$OUTPUT_DIR/$OUT_NAME"
-    SEMANTICS_PATH=$(copy_semantic_model_to_repo "$OUT_NAME")
+    SEMANTICS_PATH=$(semantics_abs_path "$OUT_NAME")
+    PR_URL=$(create_source_repo_pr "$OUTPUT_DIR/$OUT_NAME" "$OUT_NAME" || true)
   fi
 
   kill "$MU_PID" 2>/dev/null || true
@@ -428,9 +664,14 @@ if [[ "$TERMINAL" == "SUCCEEDED" ]]; then
   echo " ✓ MISSION SUCCEEDED ${MISSION_ID:+($MISSION_ID)}"
   echo " Target: ${IDENTIFIER}/${NAME}"
   echo " Output: $OUTPUT_DIR/"
-  if [[ -n "$SEMANTICS_PATH" ]]; then
+  if [[ -n "$PR_URL" ]]; then
     echo " Semantics: $SEMANTICS_PATH"
     echo " Workspace: $WORKSPACE_DIR (preserved)"
+    echo " PR: $PR_URL"
+  elif [[ -n "$SEMANTICS_PATH" ]]; then
+    echo " Semantics: $SEMANTICS_PATH"
+    echo " Workspace: $WORKSPACE_DIR (preserved)"
+    echo " PR: (not created — see warnings above)"
   fi
   echo "═══════════════════════════════════════════════════"
   exit 0

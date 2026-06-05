@@ -66,11 +66,13 @@ Append:
 - Target table resolution with evidence
 - Lineage resolution table (intermediate → lake)
 - **Dataset classification table**: | Lake Table | OSI Dataset Name | Role (fact/dim) | source | primary_key |
+- **Materialized direct-reads table**: | Lake Table | materialized_in_fields | evidence | — lake tables read by the PySpark job whose values are fully denormalized onto the fact (no join key back to source)
+- **Excluded dimensions table**: | Lake Table | reason | fields_on_fact | — direct-read lake tables NOT included as OSI datasets (e.g. no FK in fact)
 - **Relationship table**: | name | from | to | from_columns | to_columns | evidence |
 - **Field inventory per dataset**: columns, types, is_time, descriptions
 - **Metrics table**: | name | expression | description | evidence |
 - **Semantic model metadata**: name, description, ai_context draft
-- "Do not claim" list: items tempting but not proven
+- **Do-not-claim table**: | item | reason | preserve_as | — items that must NOT become OSI datasets, relationships, or metrics; `preserve_as` is one or more of: `field_description`, `ai_context`, `custom_extensions`
 
 ## Step 10: Write RESOLVED_TARGET.json (required)
 Create `RESOLVED_TARGET.json` in workspace root:
@@ -86,398 +88,466 @@ Create `RESOLVED_TARGET.json` in workspace root:
 }
 ```
 
+## Step 11: Write PROVENANCE.json (required)
+Create `PROVENANCE.json` in workspace root. This is the machine-readable contract for
+preserving do-not-claim lineage in the OSI YAML without adding non-joinable datasets.
+See `docs/osi-spec-reference.md` for the GODADDY custom_extensions schema.
+
+```json
+{
+  "grain": "one row per (shopper_id, partition_eval_mst_date)",
+  "primary_key_notes": "Composite PK; customer_id is not unique and may be null",
+  "partition_filter": "partition_eval_mst_date",
+  "intermediate_tables": [
+    {
+      "table": "customer_core_conformed.active_customer_stg",
+      "role": "staging",
+      "upstream_pyspark": "customer360/active-customer/src/pyspark/active_customer_stg.py"
+    }
+  ],
+  "transitive_sources": [
+    {
+      "table": "enterprise.dim_subscription_history",
+      "via": "customer_core_conformed.customer_active_subscription_detail_driver",
+      "materialized_in_fields": ["active_paid_subscription_list"]
+    }
+  ],
+  "materialized_direct_reads": [
+    {
+      "table": "analytic_feature.customer_type_history",
+      "materialized_in_fields": ["customer_type_name", "customer_type_reason_desc"]
+    }
+  ],
+  "excluded_dimensions": [
+    {
+      "table": "analytic_feature.customer_fraud",
+      "reason": "no_join_key_in_fact",
+      "fields_on_fact": ["customer_fraud_flag", "customer_fraud_mst_date"]
+    }
+  ],
+  "array_fields": [
+    {
+      "field": "active_paid_subscription_list",
+      "scalar_proxy": "product_pnl_category_qty",
+      "note": "not suitable for OSI aggregate metrics; use scalar proxy fields instead"
+    }
+  ],
+  "legacy_sources": [
+    {
+      "path": "s3://gd-ckpetlbatch-prod-analytic/analytic/ads_bill_line_ext/",
+      "equivalent": "ecomm_mart.bill_line_traffic_ext",
+      "condition": "pre-2022-08 partitions only"
+    }
+  ],
+  "do_not_claim": [
+    {
+      "item": "customer_core_conformed.active_customer_stg as OSI dataset",
+      "reason": "intermediate staging table not in lake catalog",
+      "preserve_as": "custom_extensions"
+    }
+  ]
+}
+```
+
+Use empty arrays `[]` for sections with no entries. Every do-not-claim item from Step 9
+must appear in `do_not_claim` with a `preserve_as` value.
+
 **The agent summarized its work in this way:**
 
 ---
 
-## Stage: analyze — customer_life_cycle (customer360)
-**Analyzed:** 2026-06-03
+# Analyze Report — customer360_customer_life_cycle_analytics
+
+**Stage:** analyze
+**Date:** 2026-06-05
+**Sources:** gather.md, repos/lake/catalog/config/prod/, repos/dof-dpaas-customer-feature/
 
 ---
 
-### Step 2: Target Table Resolution
+## Step 2: Target Table Resolution
 
-**Target lake table:** `customer360.customer_life_cycle_vw`
+| Field | Value | Evidence |
+|---|---|---|
+| Hive write target | `customer_core_conformed.customer_life_cycle` | `customer_life_cycle.py`: `df.repartition(30).write.insertInto(QUALIFIED_TABLE_NAME, overwrite=True)` where QUALIFIED_TABLE_NAME = `customer_core_conformed.customer_life_cycle` |
+| **Lake table (canonical)** | **`customer360.customer_life_cycle_vw`** | DAG `SuccessNotificationOperator` → `customer360.customer_life_cycle_vw`; Redshift insert SQL; DQ constraint on `customer360.customer_life_cycle_vw` |
+| Lake registry path | `dlms-api/us-west-2/customer360/customer-life-cycle-vw/` | Confirmed in `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/` |
+| table.yaml description | "Analytic Dataset for Customer Life Cycle" | `repos/lake/.../customer-life-cycle-vw/table.yaml`, line 8 |
+| Grain | One row per (shopper_id, partition_eval_mst_date) | DQ constraint `isPrimaryKey("partition_eval_mst_date","shopper_id")` on both local and lake tables; Confluence "One row per customer per eval date" |
+| Partition key | `partition_eval_mst_date` (string) | `table.yaml` partition_keys; Hive DDL PARTITIONED BY |
+| Data tier | 4 | `table.yaml` data_tier: 4 |
+| SLA | Daily by 08:00 AM MST | `table.yaml` sla: `cron(00 15 * * ? *)` |
+| Cadence | Daily at 07:20 UTC | DAG cron `20 7 * * *` |
 
-| Evidence item | Source |
-|---|---|
-| DAG `SuccessNotificationOperator` fires lake view update for `customer360.customer_life_cycle_vw` (prod only) | `customer360/customer-metrics/src/dag/customer_life_cycle_dag.py` |
-| Lake registry folder exists: `dlms-api/us-west-2/customer360/customer-life-cycle-vw/` | `repos/lake/catalog/config/prod/` |
-| `table.yaml` description: `"Analytic Dataset for Customer Life Cycle"`, data_tier: 4, SLA cron `00 15 * * ? *` | `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.yaml` |
-| PySpark `insertInto('customer_core_conformed.customer_life_cycle', overwrite=True)` → DAG promotes to lake view | `customer360/customer-metrics/src/pyspark/customer_life_cycle.py` |
-
-**Lake override:** Not provided in INPUT.md; determination from code is unambiguous.
-
-**Internal staging table (NOT the OSI target):** `customer_core_conformed.customer_life_cycle`
-- This is the Parquet S3 write target for the EMR job (`s3://gd-ckpetlbatch-{env}-customer-core-conformed/...`)
-- Not in lake catalog; not a valid OSI dataset `source`
-- The DAG's `conditional_call_lake_api` step promotes it to the lake view `customer360.customer_life_cycle_vw`
-
-**Grain:** One row per `(customer_id, partition_eval_mst_date)`
-- Lake DDL `customer_id` comment: `@PrimaryKey: Combination of Customer ID and partition_eval_mst_date`
-- DQ constraint: `.isPrimaryKey("partition_eval_mst_date", "shopper_id")` — code-authoritative; `shopper_id` is the unique key
-- Confluence: "one row per customer per eval date"
-- **Authoritative grain for OSI:** `[customer_id, partition_eval_mst_date]` (lake DDL); `[shopper_id, partition_eval_mst_date]` as unique_key per DQ constraint
+**Column count reconciliation:** Lake DDL body = 34 columns (confirmed by direct file read). Gather stage reported "42 columns" — this was an overcount. Both the lake DDL (`table.ddl`) and Hive DDL (`customer_life_cycle.ddl`) contain identical 34 body columns + `partition_eval_mst_date` as partition key = 35 logical columns total.
 
 ---
 
-### Step 3: Lineage Resolution
+## Step 3: Deep Lineage Resolution
 
-All 15 named source tables + 1 legacy S3 path from PySpark `get_tables(aws_env)`:
+| Source Table | In Lake Catalog? | Path | Resolution |
+|---|---|---|---|
+| analytic_feature.shopper_acquisition | YES | `us-west-2/analytic-feature/shopper-acquisition/` | Lake table — include as dimension |
+| analytic_feature.customer_type_history | YES | `us-west-2/analytic-feature/customer-type-history/` | Lake table — SCD2, time-filtered; materialized direct read |
+| customer360.dim_customer_history_vw | YES | `dlms-api/us-west-2/customer360/dim-customer-history-vw/` | Lake table — SCD2 transitive intermediate for dim_reseller; no direct FK on fact |
+| finance360.dim_country_vw | YES | `dlms-api/us-west-2/finance360/dim-country-vw/` | Lake table — include as dimension |
+| dp_enterprise.dim_reseller | YES | `us-west-2/dp-enterprise/dim-reseller/` | Lake table — PK is private_label_id; not on fact; materialized direct read |
+| enterprise.dim_new_acquisition_shopper | YES | `us-west-2/enterprise/dim-new-acquisition-shopper/` | Lake table — acquisition derivation intermediate; values denormalized onto fact |
+| enterprise.dim_subscription_history | YES | `us-west-2/enterprise/dim-subscription-history/` | Lake table — transitive source via customer_active_subscription_detail_driver; array FK |
+| ecomm_mart.bill_line_traffic_ext | YES | `us-west-2/ecomm-mart/bill-line-traffic-ext/` | Lake table — complex time-filtered join; customer_acquisition_channel_name denormalized |
+| customer_core_conformed.customer_ttm_payment_driver | NO | not in lake catalog | INTERMEDIATE driver table; upstream PySpark untraced. Sensor: `local_process/customer_core_conformed/customer_ttm_payment_driver` |
+| customer_core_conformed.customer_active_subscription_detail_driver | NO | not in lake catalog | INTERMEDIATE driver table; upstream reads enterprise.dim_subscription_history (lake). Sensor: `local_process/customer_core_conformed/customer_active_subscription_detail_driver` |
+| customer_core_conformed.active_customer_stg | NO | not in lake catalog | INTERMEDIATE staging table; base customer population. Sensor: `local_process/customer_core_conformed/active_customer_stg` |
+| analytic_feature.customer_fraud | YES | `us-west-2/analytic-feature/customer-fraud/` | Lake table — M:M join needing dedup; values denormalized; excluded dimension |
+| analytic_feature.shopper_merge | YES | `us-west-2/analytic-feature/shopper-merge/` | Lake table — time-filtered SCD join; only customer_merge_mst_date flows to fact; materialized direct read |
+| ecomm_mart.dim_bill_line_purchase_attribution | YES | `us-west-2/ecomm-mart/dim-bill-line-purchase-attribution/` | Lake table — include as dimension |
+| finance360.dim_bill_fraud_history_vw | YES | `dlms-api/us-west-2/finance360/dim-bill-fraud-history-vw/` | Lake table — include as dimension |
+| s3://gd-ckpetlbatch-prod-analytic/analytic/ads_bill_line_ext/ | NO | hardcoded S3 path | Legacy pre-2022-08 path; equivalent = ecomm_mart.bill_line_traffic_ext; code defect (hardcoded prod) |
 
-| # | PySpark Logical Key | Resolved Prod Table | Lake Registry Path | Status |
+---
+
+## Step 4: Dataset Classification
+
+| Lake Table | OSI Dataset Name | Role | source | primary_key |
 |---|---|---|---|---|
-| 1 | `analytic_feature__shopper_acquisition` | `analytic_feature.shopper_acquisition` | `us-west-2/analytic-feature/shopper-acquisition/table.ddl` | ✅ LAKE TABLE |
-| 2 | `analytic_feature__customer_type_history` | `analytic_feature.customer_type_history` | `us-west-2/analytic-feature/customer-type-history/table.ddl` | ✅ LAKE TABLE |
-| 3 | `customer360__dim_customer_history_vw` | `customer360.dim_customer_history_vw` | `dlms-api/us-west-2/customer360/dim-customer-history-vw/table.ddl` | ✅ LAKE TABLE |
-| 4 | `finance360__dim_country_vw` | `finance360.dim_country_vw` | `dlms-api/us-west-2/finance360/dim-country-vw/table.ddl` | ✅ LAKE TABLE |
-| 5 | `dp_enterprise__dim_reseller` | `dp_enterprise.dim_reseller` | `us-west-2/dp-enterprise/dim-reseller/table.ddl` | ✅ LAKE TABLE |
-| 6 | `enterprise_dim_new_acquisition_shopper` | `enterprise.dim_new_acquisition_shopper` | `us-west-2/enterprise/dim-new-acquisition-shopper/table.ddl` | ✅ LAKE TABLE |
-| 7 | `enterprise__dim_subscription_history` | `enterprise.dim_subscription_history` | `us-west-2/enterprise/dim-subscription-history/table.ddl` | ✅ LAKE TABLE |
-| 8 | `ecomm_mart_bill_line_traffic_ext` | `ecomm_mart.bill_line_traffic_ext` | `us-west-2/ecomm-mart/bill-line-traffic-ext/table.ddl` | ✅ LAKE TABLE |
-| 9 | `ecomm_mart__dim_bill_line_purchase_attribution` | `ecomm_mart.dim_bill_line_purchase_attribution` | `us-west-2/ecomm-mart/dim-bill-line-purchase-attribution/table.ddl` | ✅ LAKE TABLE |
-| 10 | `finance360__dim_bill_fraud_history_vw` | `finance360.dim_bill_fraud_history_vw` | `dlms-api/us-west-2/finance360/dim-bill-fraud-history-vw/table.ddl` | ✅ LAKE TABLE |
-| 11 | `customer360__customer_ttm_payment_driver` | `customer_core_conformed.customer_ttm_payment_driver` | Not in lake registry | ❌ INTERNAL DRIVER — DDL at `active-customer-drivers/src/ddls/customer_ttm_payment_driver.ddl` |
-| 12 | `customer360__customer_active_subscription_detail_driver` | `customer_core_conformed.customer_active_subscription_detail_driver` | Not in lake registry | ❌ INTERNAL DRIVER — DDL at `active-customer-drivers/src/ddls/customer_active_subscription_detail_driver.ddl` |
-| 13 | `customer360__active_customer` | `customer_core_conformed.active_customer_stg` | Not in lake registry | ❌ INTERNAL DRIVER — DDL at `active-customer/src/ddls/active_customer_stg.ddl` |
-| 14 | `analytic_feature__customer_fraud` | `analytic_feature.customer_fraud` | `us-west-2/analytic-feature/customer-fraud/table.ddl` | ✅ LAKE TABLE |
-| 15 | `analytic_feature__shopper_merge` | `analytic_feature.shopper_merge` | `us-west-2/analytic-feature/shopper-merge/table.ddl` | ✅ LAKE TABLE |
-| 16 | *(legacy, hardcoded S3)* | `s3://gd-ckpetlbatch-prod-analytic/analytic/ads_bill_line_ext/` | N/A | ❌ UNRESOLVED — External/legacy S3 path, hardcoded prod, not a lake table |
+| customer360.customer_life_cycle_vw | customer_life_cycle | fact | customer360.customer_life_cycle_vw | [shopper_id, partition_eval_mst_date] |
+| analytic_feature.shopper_acquisition | shopper_acquisition | dimension | analytic_feature.shopper_acquisition | [shopper_id] |
+| finance360.dim_country_vw | dim_country | dimension | finance360.dim_country_vw | [country_code] |
+| ecomm_mart.dim_bill_line_purchase_attribution | dim_bill_line_purchase_attribution | dimension | ecomm_mart.dim_bill_line_purchase_attribution | [bill_id, bill_line_num] |
+| finance360.dim_bill_fraud_history_vw | dim_bill_fraud_history | dimension | finance360.dim_bill_fraud_history_vw | [bill_id, effective_start_mst_ts] |
 
-**Internal driver tables resolution note:**
-Tables 11–13 (`customer_ttm_payment_driver`, `customer_active_subscription_detail_driver`, `active_customer_stg`) are internal ETL staging tables within the `customer_core_conformed` schema. They are produced by sibling PySpark pipelines in the same repo (`customer360/active-customer-drivers/` and `customer360/active-customer/`), which themselves read from lake tables. Their outputs are already aggregated and denormalized into the fact table `customer_life_cycle_vw`. They are NOT valid OSI dataset sources.
+**Classification rationale:**
+- `customer_life_cycle` is the central fact: partitioned daily snapshot, composite PK, measures attributes.
+- `shopper_acquisition` is joined on fact.shopper_id → dim.shopper_id; one acquisition record per shopper per eval date (partitioned). Valid M:1 per partition.
+- `dim_country` is joined via fact.customer_acquisition_country_code → dim_country_vw.country_code (current_record_flag=true). Clean M:1.
+- `dim_bill_line_purchase_attribution` is joined via fact.customer_acquisition_bill_id → dim.bill_id. Valid FK (dedup needed; use latest bill_line_num).
+- `dim_bill_fraud_history` is joined via fact.customer_acquisition_bill_id → dim.bill_id. SCD2; filter current_record_flag=true or use SELECT DISTINCT bill_id.
 
 ---
 
-### Step 4: Dataset Classification
+## Step 4b: Materialized Direct-Reads
 
-| Lake Table | OSI Dataset Name | Role | source | primary_key | Include in OSI Model |
+Lake tables read directly by the PySpark whose values are fully denormalized onto the fact (no re-joinable FK remaining):
+
+| Lake Table | materialized_in_fields | evidence |
+|---|---|---|
+| analytic_feature.customer_type_history | customer_type_name, customer_type_reason_desc | PySpark join #4: shopper_id + date-range filter (record_start_mst_date ≤ eval ≤ record_end_mst_date); SCD2 — can't re-join without eval date |
+| dp_enterprise.dim_reseller | reseller_type_id, reseller_type_name | PySpark join #14 via private_label_id (from dim_customer_history_vw); private_label_id NOT on fact |
+| analytic_feature.shopper_merge | customer_merge_mst_date | PySpark join #7: shopper_id + date-range filter on merge start/end dates; only merge date preserved on fact |
+| ecomm_mart.bill_line_traffic_ext | customer_acquisition_channel_name | PySpark join #6 via combined_bill_line; complex time-filter (bill_modified_mst_date ≤ eval AND bill_id=new_acquisition_bill_id); legacy S3 path is this table's pre-2022-08 equivalent |
+| customer360.dim_customer_history_vw | (intermediate only — provides private_label_id to feed dim_reseller join) | PySpark join #3, #5: SCD2 filter on effective_start/end_mst_ts; private_label_id not on final fact |
+| enterprise.dim_new_acquisition_shopper | customer_acquisition_mst_date, customer_acquisition_bill_id (via derivation chain) | PySpark joins #11, #19: bill_shopper_id = shopper_id; acquisition bill derivation for new/intraday customers |
+
+---
+
+## Step 4c: Excluded Dimensions
+
+Direct-read lake tables NOT included as OSI datasets:
+
+| Lake Table | reason | fields_on_fact |
+|---|---|---|
+| analytic_feature.customer_fraud | M:M join on (shopper_id, customer_id) without dedup guarantee; customer_fraud has multiple fraud records per shopper; values fully denormalized as flags | customer_fraud_flag, customer_fraud_mst_date |
+
+---
+
+## Step 5: Relationships
+
+| name | from | to | from_columns | to_columns | evidence |
 |---|---|---|---|---|---|
-| `customer360.customer_life_cycle_vw` | `customer_life_cycle_vw` | **FACT** | `customer360.customer_life_cycle_vw` | `[customer_id, partition_eval_mst_date]` | ✅ Yes — primary fact |
-| `analytic_feature.shopper_acquisition` | `shopper_acquisition` | **DIMENSION** | `analytic_feature.shopper_acquisition` | `[shopper_id]` | ✅ Yes — FK-annotated in lake DDL |
-| `dp_enterprise.dim_reseller` | `dim_reseller` | **DIMENSION** | `dp_enterprise.dim_reseller` | `[private_label_id]` | ✅ Yes — FK-annotated in lake DDL, BROADCAST hint |
-| `finance360.dim_country_vw` | `dim_country_vw` | **DIMENSION** | `finance360.dim_country_vw` | `[country_code]` | ✅ Yes — geographic lookup, BROADCAST hint |
-| `customer360.dim_customer_history_vw` | `dim_customer_history_vw` | **DIMENSION** | `customer360.dim_customer_history_vw` | `[customer_id, effective_start_mst_ts]` | ✅ Yes — SCD2 customer profile, join #3 |
-| `enterprise.dim_subscription_history` | `dim_subscription_history` | **DIMENSION** | `enterprise.dim_subscription_history` | `[subscription_id]` | ✅ Yes — FK-annotated (array FK), join #7 |
-| `analytic_feature.customer_type_history` | `customer_type_history` | DIMENSION | `analytic_feature.customer_type_history` | `[shopper_id, record_start_mst_date]` | ⚠️ Omit — `customer_type_name` already denormalized into fact |
-| `analytic_feature.customer_fraud` | `customer_fraud` | DIMENSION | `analytic_feature.customer_fraud` | `[shopper_id, customer_id]` | ⚠️ Omit — `customer_fraud_flag`, `customer_fraud_mst_date` already in fact |
-| `analytic_feature.shopper_merge` | `shopper_merge` | DIMENSION | `analytic_feature.shopper_merge` | `[original_shopper_id, shopper_merge_start_mst_date]` | ⚠️ Omit — identity resolution; `customer_merge_mst_date` already in fact |
-| `enterprise.dim_new_acquisition_shopper` | `dim_new_acquisition_shopper` | DIMENSION | `enterprise.dim_new_acquisition_shopper` | `[bill_shopper_id]` | ⚠️ Omit — ETL computation input, acquisition data denormalized into fact |
-| `ecomm_mart.bill_line_traffic_ext` | `bill_line_traffic_ext` | DIMENSION | `ecomm_mart.bill_line_traffic_ext` | `[bill_id, bill_line_num]` | ⚠️ Omit — granular bill/traffic table; `customer_acquisition_channel_name` already in fact |
-| `ecomm_mart.dim_bill_line_purchase_attribution` | `dim_bill_line_purchase_attribution` | DIMENSION | `ecomm_mart.dim_bill_line_purchase_attribution` | `[bill_id, bill_line_num]` | ⚠️ Omit — `point_of_purchase_name` already in fact |
-| `finance360.dim_bill_fraud_history_vw` | `dim_bill_fraud_history_vw` | DIMENSION | `finance360.dim_bill_fraud_history_vw` | `[bill_id, effective_start_mst_ts]` | ⚠️ Omit — `customer_acquisition_bill_fraud_flag` already in fact |
+| life_cycle_to_shopper_acquisition | customer_life_cycle | shopper_acquisition | [shopper_id] | [shopper_id] | PySpark join #1: `combined_customer_base.shopper_id = acq.shopper_id`; shopper_id on fact; acquisition table partitioned by eval date |
+| life_cycle_to_dim_country | customer_life_cycle | dim_country | [customer_acquisition_country_code] | [country_code] | PySpark join #12: `acq.bill_country_code = geo.country_code`; stored on fact as customer_acquisition_country_code (UK→GB normalized) |
+| life_cycle_to_dim_bill_line_purchase_attribution | customer_life_cycle | dim_bill_line_purchase_attribution | [customer_acquisition_bill_id] | [bill_id] | PySpark join #9: `pop.bill_id = COALESCE(acq.bill_id, ss.original_bill_id)`; stored as customer_acquisition_bill_id on fact |
+| life_cycle_to_dim_bill_fraud_history | customer_life_cycle | dim_bill_fraud_history | [customer_acquisition_bill_id] | [bill_id] | PySpark join #10: `bf.bill_id = COALESCE(acq.bill_id, ss.original_bill_id)`; PySpark uses SELECT DISTINCT bill_id before join |
 
 ---
 
-### Step 5: Relationships
+## Step 6: Field Inventory
 
-| Name | From (many) | To (one) | from_columns | to_columns | Evidence |
-|---|---|---|---|---|---|
-| `customer_life_cycle_to_shopper_acquisition` | `customer_life_cycle_vw` | `shopper_acquisition` | `[shopper_id]` | `[shopper_id]` | PySpark join #1: `ac.shopper_id = acq.shopper_id`; lake DDL `@ForeignKey (analytic_feature.shopper_acquisition)` on `customer_acquisition_bill_id` |
-| `customer_life_cycle_to_dim_reseller` | `customer_life_cycle_vw` | `dim_reseller` | `[reseller_type_id]` | `[reseller_type_id]` | Lake DDL `@ForeignKey (dp_enterprise.dim_reseller)` on `reseller_type_id`; PySpark get_reseller_df join #12 (BROADCAST) |
-| `customer_life_cycle_to_dim_country_vw` | `customer_life_cycle_vw` | `dim_country_vw` | `[customer_acquisition_country_code]` | `[country_code]` | PySpark join #14: `acq.bill_country_code = geo.country_code AND geo.current_record_flag = true` (BROADCAST) |
-| `customer_life_cycle_to_dim_customer_history_vw` | `customer_life_cycle_vw` | `dim_customer_history_vw` | `[customer_id]` | `[customer_id]` | PySpark join #3 (`ac.shopper_id = pl.shopper_id` to get `private_label_id`); SCD2 dimension — consumers should additionally filter `current_record_flag = true` |
-| `customer_life_cycle_to_dim_subscription_history` | `customer_life_cycle_vw` | `dim_subscription_history` | `[active_paid_subscription_list]` | `[subscription_id]` | Lake DDL `@ForeignKey (enterprise.dim_subscription_history)` on `active_paid_subscription_list`; **ARRAY FK** — requires UNNEST/LATERAL in queries; flag for YAML generation stage |
+### 6a. customer_life_cycle (fact) — source: customer360.customer_life_cycle_vw
 
-**Array FK note for YAML generation:** `active_paid_subscription_list` is an `array<string>` column. Standard OSI relationship semantics use scalar column joins. This relationship should be included with an `ai_context` note explaining the UNNEST pattern. The relationship is valid semantically; execution requires: `CROSS JOIN UNNEST(customer_life_cycle_vw.active_paid_subscription_list) AS t(subscription_id_ref) JOIN dim_subscription_history ON t.subscription_id_ref = dim_subscription_history.subscription_id`.
-
----
-
-### Step 6: Field Inventory
-
-#### Dataset: customer_life_cycle_vw (FACT)
-Source: `customer360.customer_life_cycle_vw` | DDL: `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.ddl`
-
-| Column | Type | is_time | Description |
+| field_name | type | is_time | description |
 |---|---|---|---|
-| customer_id | string | false | @PrimaryKey (with partition_eval_mst_date): UUID representing the customer entity across GoDaddy systems |
-| shopper_id | string | false | @UniqueKey: Numeric shopper profile ID used in eCommerce transactions |
-| customer_acquisition_bill_id | string | false | @FK analytic_feature.shopper_acquisition: Bill ID triggering first net positive status |
-| customer_acquisition_mst_date | date | **true** | Date of first net positive acquisition bill (MST) |
-| customer_acquisition_mst_month | string | **true** | Acquisition month truncated to month (TRUNC to MONTH) |
-| customer_acquisition_country_code | string | false | Country code where customer was acquired |
-| customer_acquisition_channel_name | string | false | Channel through which customer was acquired |
-| customer_tenure_year_count | int | false | Tenure in years: CAST(DATEDIFF(eval_date, acq_date) / 365 AS INT) |
-| customer_acquisition_country_name | string | false | Country name where customer was acquired |
-| customer_region_1_name | string | false | Geographic reporting region 1 |
-| customer_region_2_name | string | false | Geographic reporting region 2 |
-| customer_region_3_name | string | false | Geographic reporting region 3 |
-| customer_domestic_international_name | string | false | Domestic vs. international indicator |
-| reseller_type_id | int | false | @FK dp_enterprise.dim_reseller: Reseller type numeric ID |
-| reseller_type_name | string | false | Reseller type name |
-| customer_type_name | string | false | Customer type label at evaluation date; overridden to '123 Reg' if private_label_id=587240 |
-| customer_type_reason_desc | string | false | Customer type reason description |
-| customer_fraud_flag | boolean | false | True if customer is flagged as fraud at evaluation date |
-| active_paid_subscription_list | array<string> | false | @FK enterprise.dim_subscription_history: COLLECT_SET of active paid subscription_ids (finance-payable) |
-| product_pnl_category_list | array<string> | false | COLLECT_SET of product P&L categories owned by customer |
-| product_pnl_category_qty | int | false | COUNT(DISTINCT product_pnl_category) for active subscriptions |
-| product_pnl_line_list | array<string> | false | COLLECT_SET of product P&L lines owned by customer |
-| ttm_all_bill_list | array<string> | false | COLLECT_SET of bill IDs from trailing twelve months (TTM) |
-| brand_name_list | array<string> | false | SORT_ARRAY(ARRAY_UNION of subscription and TTM brands) |
-| ttm_gcr_usd_amt | decimal(18,2) | false | SUM(ttm_total_gcr_usd_amt) for TTM window; excludes trxn_currency_code='N/A' |
+| customer_id | string | — | Unique UUID representing the customer entity across GoDaddy systems (not unique alone; PK with partition date) |
+| shopper_id | string | — | Unique numeric ID for the shopper profile used in eCommerce transactions (composite PK field) |
+| customer_acquisition_bill_id | string | — | Bill ID that triggered first net positive status for customer (FK to shopper_acquisition and bill-level dims) |
+| customer_acquisition_mst_date | date | **true** | Date of bill that triggered first net positive status for customer (MST) |
+| customer_acquisition_mst_month | string | — | Month of customer acquisition (MST), truncated to month (format: YYYY-MM-01) |
+| customer_acquisition_country_code | string | — | Country code where customer was acquired (FK to finance360.dim_country_vw; UK normalized to GB) |
+| customer_acquisition_channel_name | string | — | Channel through which customer was acquired (from bill_line_traffic_ext; denormalized) |
+| customer_tenure_year_count | int | — | Tenure of the customer in years (derived: datediff(partition_eval_mst_date, customer_acquisition_mst_date) / 365) |
+| customer_acquisition_country_name | string | — | Country name where customer was acquired (denormalized from finance360.dim_country_vw) |
+| customer_region_1_name | string | — | Geographic region 1 for the customer (denormalized from finance360.dim_country_vw.report_region_1_name) |
+| customer_region_2_name | string | — | Geographic region 2 for the customer (denormalized from finance360.dim_country_vw.report_region_2_name) |
+| customer_region_3_name | string | — | Geographic region 3 for the customer (denormalized from finance360.dim_country_vw.report_region_3_name) |
+| customer_domestic_international_name | string | — | Whether customer is domestic or international (denormalized from finance360.dim_country_vw) |
+| reseller_type_id | int | — | Type ID of reseller organization (denormalized from dp_enterprise.dim_reseller via private_label_id chain) |
+| reseller_type_name | string | — | Name of the reseller (denormalized from dp_enterprise.dim_reseller) |
+| customer_type_name | string | — | Customer type label at evaluation date (denormalized from analytic_feature.customer_type_history; SCD2) |
+| customer_type_reason_desc | string | — | Customer type classification reason (denormalized from analytic_feature.customer_type_history) |
+| customer_fraud_flag | boolean | — | True if customer is flagged as fraud at evaluation date (denormalized from analytic_feature.customer_fraud) |
+| active_paid_subscription_list | array<string> | — | List of active paid subscription_ids (array FK to enterprise.dim_subscription_history; not suitable for standard SQL aggregates) |
+| product_pnl_category_list | array<string> | — | List of product PNL category names owned by customer |
+| product_pnl_category_qty | int | — | Number of distinct product PNL categories owned by customer (scalar proxy for product breadth; COUNT DISTINCT in PySpark) |
+| product_pnl_line_list | array<string> | — | List of product PNL line names owned by customer |
+| ttm_all_bill_list | array<string> | — | List of all bill IDs from trailing twelve months (TTM) |
+| brand_name_list | array<string> | — | List of all brands associated with the customer in TTM |
+| ttm_gcr_usd_amt | decimal(18,2) | — | Total gross cash received (GCR) USD in trailing twelve months (SUM of net-positive TTM payments) |
 | customer_churn_mst_date | date | **true** | MST date when customer most recently churned; null if not churned |
-| customer_reactivate_mst_date | date | **true** | MST date when customer was most recently reactivated |
-| customer_merge_mst_date | date | **true** | MST date when customer was merged into another account |
-| customer_fraud_mst_date | date | **true** | MST date when fraud flag was set on customer |
-| customer_state_enum | string | false | @Enumerated(active, churned, merged, reactivated, intraday): Customer state at eval date |
-| active_status_flag | boolean | false | True if customer_state_enum NOT IN ('churned', 'intraday') |
-| point_of_purchase_name | string | false | Point of purchase name for the acquisition bill |
-| customer_acquisition_bill_fraud_flag | boolean | false | True if acquisition bill has a record in dim_bill_fraud_history_vw |
-| etl_build_mst_ts | timestamp | **true** | Timestamp when record was built by ETL (from_utc_timestamp(current_timestamp(), 'MST')) |
-| partition_eval_mst_date | string | **true** | PARTITION KEY: Evaluation date in YYYY-MM-DD format |
+| customer_reactivate_mst_date | date | **true** | MST date when customer was most recently reactivated after churn |
+| customer_merge_mst_date | date | **true** | MST date when the customer was merged into another account (denormalized from analytic_feature.shopper_merge) |
+| customer_fraud_mst_date | date | **true** | MST date when a fraud flag was set on customer (denormalized from analytic_feature.customer_fraud) |
+| customer_state_enum | string | — | Customer state as of evaluation date: active, churned, merged, reactivated, new, intraday |
+| active_status_flag | boolean | — | True if customer is currently active at evaluation date |
+| point_of_purchase_name | string | — | Point of purchase name from the customer acquisition bill (from ecomm_mart.dim_bill_line_purchase_attribution) |
+| customer_acquisition_bill_fraud_flag | boolean | — | True if acquisition bill has a fraud record in finance360.dim_bill_fraud_history_vw |
+| etl_build_mst_ts | timestamp | **true** | Time when this record was built by ETL system |
+| partition_eval_mst_date | string | **true** | PARTITION KEY: data collection end date; all facts as of end of this day (REQUIRED filter for point-in-time queries) |
 
-#### Dataset: shopper_acquisition (DIMENSION)
-Source: `analytic_feature.shopper_acquisition` | DDL: `repos/lake/catalog/config/prod/us-west-2/analytic-feature/shopper-acquisition/table.ddl`
+### 6b. shopper_acquisition (dimension) — source: analytic_feature.shopper_acquisition
 
-| Column | Type | is_time | Description |
+| field_name | type | is_time | description |
 |---|---|---|---|
-| shopper_id | string | false | PK: Shopper identifier |
-| evaluation_mst_date | date | **true** | Evaluation date for this acquisition record |
-| acq_bill_mst_date | date | **true** | Date of acquisition bill (MST) |
-| acq_bill_mst_ts | timestamp | **true** | Timestamp of acquisition bill (MST) |
-| acq_bill_id | string | false | Acquisition bill ID |
-| acq_isc_source_code | string | false | ISC source code at acquisition |
-| acq_isc_channel_name | string | false | Acquisition channel name |
-| acq_country_code | string | false | Country code at acquisition |
-| acq_reseller_type_name | string | false | Reseller type name at acquisition |
-| acq_private_label_id | int | false | Private label ID at acquisition |
-| acq_fraud_flag | boolean | false | Fraud flag on acquisition |
-| acq_gcr_usd_amt | decimal(18,2) | false | GCR in USD at acquisition |
-| acq_product_list_price_usd_amt | decimal(18,2) | false | Product list price in USD at acquisition |
-| acq_point_of_purchase_name | string | false | Point of purchase at acquisition |
-| acq_viral_flag | boolean | false | Viral acquisition indicator |
-| acq_product_names | string | false | Product names at acquisition |
+| shopper_id | string | — | PK: GoDaddy shopper profile identifier |
+| evaluation_mst_date | date | **true** | Date this acquisition record was evaluated (partition key) |
+| acq_bill_mst_date | date | **true** | Date of the acquisition bill (MST) |
+| acq_bill_mst_ts | timestamp | **true** | Timestamp of the acquisition bill (MST) |
+| acq_bill_id | string | — | Acquisition bill identifier |
+| acq_isc_source_code | string | — | ISC source code for customer acquisition |
+| acq_isc_channel_name | string | — | ISC channel name for customer acquisition |
+| acq_country_code | string | — | Country code of the acquisition bill |
+| acq_reseller_type_name | string | — | Reseller type at time of acquisition |
+| acq_private_label_id | int | — | Private label ID at time of acquisition |
+| acq_fraud_flag | boolean | — | True if acquisition event was flagged as fraud |
+| acq_gcr_usd_amt | decimal(18,2) | — | Gross cash received USD at acquisition |
+| acq_product_list_price_usd_amt | decimal(18,2) | — | Product list price USD at acquisition |
+| acq_point_of_purchase_name | string | — | Point of purchase at acquisition |
+| acq_viral_flag | boolean | — | True if acquisition was viral/referral |
+| acq_product_names | string | — | Product names purchased at acquisition |
 | load_date | date | **true** | ETL load date |
 
-#### Dataset: dim_reseller (DIMENSION)
-Source: `dp_enterprise.dim_reseller` | DDL: `repos/lake/catalog/config/prod/us-west-2/dp-enterprise/dim-reseller/table.ddl`
+### 6c. dim_country (dimension) — source: finance360.dim_country_vw
 
-| Column | Type | is_time | Description |
+| field_name | type | is_time | description |
 |---|---|---|---|
-| private_label_id | int | false | PK: Reseller private label ID |
-| reseller_shopper_id | string | false | Reseller's shopper ID |
-| reseller_type_id | int | false | Reseller type numeric ID (join key from fact) |
-| reseller_type_name | string | false | Reseller type name |
-| reseller_name | string | false | Reseller name |
-| reseller_country_code | string | false | Reseller country code |
-| reseller_country_name | string | false | Reseller country name |
-| reseller_domestic_international_name | string | false | Domestic/international indicator |
-| reseller_region_1_name | string | false | Reseller geographic region 1 |
-| reseller_region_2_name | string | false | Reseller geographic region 2 |
+| country_code | string | — | PK: Unique country identifier (GoDaddy-specific; some non-ISO codes) |
+| country_name | string | — | Name of the country |
+| iso_country_code | string | — | ISO 2-character country code |
+| iso_country3_code | string | — | ISO 3-character country code |
+| iso_country_num | string | — | ISO numeric country identifier |
+| region_name | string | — | Region (e.g., Europe, Asia) |
+| region_sort_id | string | — | Region sort order |
+| primary_language_name | string | — | Primary language of the country |
+| domestic_international_ind | string | — | Enum: Domestic or International |
+| tier_num | string | — | Country tier classification |
+| report_region_1_name | string | — | Reporting region hierarchy level 1 |
+| report_region_2_name | string | — | Reporting region hierarchy level 2 |
+| report_region_3_name | string | — | Reporting region hierarchy level 3 |
+| report_focal_country_name | string | — | Country/language reporting group |
+| report_sub_region_name | string | — | Additional reporting sub-region |
+| legacy_region_name | string | — | Legacy region hierarchy |
+| eu_flag | boolean | — | True if country is in the European Union |
+| active_flag | boolean | — | True if country code is active/current |
+| fin_region_1_name | string | — | Finance region hierarchy level 1 |
+| fin_region_2_name | string | — | Finance region hierarchy level 2 |
+| marketing_region_name | string | — | Marketing region name |
+| marketing_region_group_name | string | — | Marketing region group name |
+| finance_region_name | string | — | Finance region name |
+| row_hash | string | — | SHA2 hash of tracked columns for SCD2 change detection |
+| key_hash | string | — | SHA2 hash of key columns |
+| current_record_flag | boolean | — | True for current/active record (filter on true for M:1 join) |
+| etl_insert_utc_ts | timestamp | **true** | Record insert timestamp (UTC) |
+| etl_update_utc_ts | timestamp | **true** | Record last updated timestamp (UTC) |
 
-#### Dataset: dim_country_vw (DIMENSION)
-Source: `finance360.dim_country_vw` | DDL: `repos/lake/catalog/config/prod/dlms-api/us-west-2/finance360/dim-country-vw/table.ddl`
+### 6d. dim_bill_line_purchase_attribution (dimension) — source: ecomm_mart.dim_bill_line_purchase_attribution
 
-| Column | Type | is_time | Description |
+| field_name | type | is_time | description |
 |---|---|---|---|
-| country_code | string | false | PK: Country code (some non-ISO GoDaddy-specific codes; UK → GB normalized in fact) |
-| country_name | string | false | Country name |
-| iso_country_code | string | false | ISO 2-character country code |
-| iso_country3_code | string | false | ISO 3-character country code |
-| region_name | string | false | Region name (e.g., Europe, Asia) |
-| domestic_international_ind | string | false | Domestic/International enum |
-| report_region_1_name | string | false | Reporting region hierarchy level 1 |
-| report_region_2_name | string | false | Reporting region hierarchy level 2 |
-| report_region_3_name | string | false | Reporting region hierarchy level 3 |
-| report_focal_country_name | string | false | Reporting country/language grouping |
-| fin_region_1_name | string | false | Finance region hierarchy level 1 |
-| fin_region_2_name | string | false | Finance region hierarchy level 2 |
-| marketing_region_name | string | false | Marketing region name |
-| marketing_region_group_name | string | false | Marketing region group name |
-| finance_region_name | string | false | Finance region name |
-| eu_flag | boolean | false | EU membership indicator |
-| active_flag | boolean | false | Country code active indicator |
-| current_record_flag | boolean | false | SCD2 current record flag (join with `= true`) |
-| etl_insert_utc_ts | timestamp | **true** | ETL insert timestamp (UTC) |
-| etl_update_utc_ts | timestamp | **true** | ETL update timestamp (UTC) |
+| bill_id | string | — | PK (with bill_line_num): Bill identifier |
+| bill_line_num | int | — | PK: Line item number within bill; use MAX or latest for dedup |
+| bill_modified_mst_ts | timestamp | **true** | Timestamp of bill modification (MST) |
+| bill_modified_mst_date | date | **true** | Date of bill modification (MST) |
+| purchase_path_attributed_name | string | — | Attributed purchase path name |
+| point_of_purchase_name | string | — | Point of purchase name (denormalized onto fact) |
+| sub_point_of_purchase_name | string | — | Sub point of purchase name |
+| customer_product_purchase_type_name | string | — | Customer product purchase type |
+| etl_build_mst_ts | timestamp | **true** | ETL build timestamp |
 
-#### Dataset: dim_customer_history_vw (DIMENSION)
-Source: `customer360.dim_customer_history_vw` | DDL: `repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/dim-customer-history-vw/table.ddl`
+### 6e. dim_bill_fraud_history (dimension) — source: finance360.dim_bill_fraud_history_vw
 
-| Column | Type | is_time | Description |
+| field_name | type | is_time | description |
 |---|---|---|---|
-| customer_id | string | false | PK: Customer UUID (SCD2 PK with effective_start_mst_ts) |
-| shopper_id | string | false | Shopper numeric ID |
-| external_reseller_customer_id | int | false | External reseller customer ID |
-| federation_partner_id | string | false | Federation partner ID (FPID) for brand-to-GoDaddy federation |
-| federation_partner_name | string | false | Brand name associated with FPID |
-| parent_customer_id | string | false | Parent customer UUID |
-| parent_shopper_id | string | false | Parent shopper ID |
-| private_label_id | int | false | Reseller/private label ID |
-| company_flag | boolean | false | True if customer is a company |
-| internal_shopper_flag | boolean | false | True if internal shopper |
-| temporary_shopper_flag | boolean | false | True if temporary shopper |
-| closed_shopper_flag | boolean | false | True if shopper account is closed |
-| city_name | string | false | Customer city |
-| state_code | string | false | Customer state code |
-| zip_code | string | false | Customer ZIP code |
-| country_code | string | false | Customer country code |
-| email_domain_name | string | false | Customer email domain |
-| email_hash | string | false | SHA hash of customer email |
-| primary_phone_flag | boolean | false | Primary phone on file |
-| mobile_phone_flag | boolean | false | Mobile phone on file |
-| default_currency_code | string | false | Customer default currency |
-| market_code | string | false | Customer market code |
-| created_mst_ts | timestamp | **true** | Account creation timestamp (MST) |
-| updated_mst_ts | timestamp | **true** | Account last updated timestamp (MST) |
-| closed_mst_ts | timestamp | **true** | Account closed timestamp (MST) |
+| bill_id | string | — | PK (with effective_start_mst_ts): Bill identifier |
+| fraud_flag_mst_ts | timestamp | **true** | Timestamp when fraud flag was set (MST) |
+| fraud_flag_mst_date | date | **true** | Date when fraud flag was set (MST) |
+| fraud_review_id | int | — | ID of fraud review where bill was marked fraud |
+| row_hash | string | — | SCD2 change hash |
+| key_hash | string | — | Key columns hash |
 | effective_start_mst_ts | timestamp | **true** | SCD2 effective start timestamp |
 | effective_end_mst_ts | timestamp | **true** | SCD2 effective end timestamp |
-| current_record_flag | boolean | false | SCD2 current record flag (filter = true for current) |
-| etl_build_mst_ts | timestamp | **true** | ETL build timestamp |
-| etl_insert_mst_ts | timestamp | **true** | ETL insert timestamp |
-| etl_update_mst_ts | timestamp | **true** | ETL update timestamp |
-
-#### Dataset: dim_subscription_history (DIMENSION)
-Source: `enterprise.dim_subscription_history` | DDL: `repos/lake/catalog/config/prod/us-west-2/enterprise/dim-subscription-history/table.ddl`
-
-| Column | Type | is_time | Description |
-|---|---|---|---|
-| subscription_id | string | false | @UniqueKey: Native subscription identifier (PK for OSI join) |
-| resource_id | bigint | false | Legacy CES resource identifier |
-| product_type_id | int | false | Product type numeric ID |
-| product_type_desc | string | false | Product type description (e.g., Domain Registration, Web Hosting) |
-| product_family_name | string | false | Product family grouping name |
-| shopper_id | string | false | Shopper owning the subscription |
-| customer_id | string | false | @FK customer360.dim_customer_history_vw: Customer UUID |
-| original_bill_id | string | false | @FK ecomm360.fact_bill_line_vw: Originating purchase bill ID |
-| subscription_status_id | int | false | Subscription lifecycle status numeric code |
-| subscription_status_name | string | false | Subscription lifecycle status name (e.g., active, cancelled, expired) |
-| subscription_sub_status_name | string | false | Granular sub-status name |
-| subscription_bill_due_mst_ts | timestamp | **true** | Next billing due date timestamp (MST) |
-| subscription_bill_due_mst_date | date | **true** | Next billing due date (MST) |
-| subscription_paid_through_mst_date | date | **true** | Paid-through date (end of active billing period) |
-| auto_renewal_flag | boolean | false | Auto-renewal configured |
-| subscription_cancel_mst_date | date | **true** | Cancellation date (null if not cancelled) |
-| subscription_create_mst_ts | timestamp | **true** | Subscription creation timestamp (MST) |
-| subscription_create_mst_date | date | **true** | Subscription creation date (MST) |
-| transaction_currency_code | string | false | ISO 4217 transaction currency code |
-| source_system_name | string | false | Source eCommerce system name |
-| exclude_reason_desc | string | false | Exclusion reason for non-standard analyses |
+| current_record_flag | boolean | — | True for current record (filter on true or use SELECT DISTINCT bill_id) |
+| etl_insert_utc_ts | timestamp | **true** | Insert timestamp (UTC) |
+| etl_update_utc_ts | timestamp | **true** | Update timestamp (UTC) |
 
 ---
 
-### Step 7: Metrics
+## Step 7: Metrics
 
-| Name | ANSI_SQL Expression | Description | Evidence |
+| name | expression (ANSI_SQL) | description | evidence |
 |---|---|---|---|
-| `total_ttm_gcr_usd` | `SUM(customer_life_cycle_vw.ttm_gcr_usd_amt)` | Total trailing twelve-month gross cash received (GCR) in USD across all customers | PySpark: `SUM(ttm_total_gcr_usd_amt)` aggregation (WHERE trxn_currency_code <> 'N/A'); Alation description: "Trailing twelve month (TTM) GCR" listed as key feature |
-| `active_customer_count` | `COUNT(DISTINCT CASE WHEN customer_life_cycle_vw.active_status_flag = TRUE THEN customer_life_cycle_vw.customer_id END)` | Number of distinct active customers at evaluation date (not churned or intraday) | PySpark: `active_status_flag = customer_status NOT IN ('churned','intraday')`; Confluence: active customer lifecycle state; Alation: lifecycle state tracking |
-| `churned_customer_count` | `COUNT(DISTINCT CASE WHEN customer_life_cycle_vw.customer_state_enum = 'churned' THEN customer_life_cycle_vw.customer_id END)` | Number of customers with churned lifecycle state at evaluation date | PySpark: `customer_state_enum` explicit 'churned' enum value; Confluence: churn = "user turns from Paid to Free trial, or service lapses" |
-| `avg_customer_tenure_years` | `AVG(customer_life_cycle_vw.customer_tenure_year_count)` | Average customer tenure in years across all customers | PySpark: `CAST(DATEDIFF(eval_date, acq_date) / 365 AS INT)` → `customer_tenure_year_count`; Confluence: `customer_tenure_year_count` = shopper_tenure_days / 365 |
-| `unique_customer_count` | `COUNT(DISTINCT customer_life_cycle_vw.customer_id)` | Total distinct customers in snapshot for a given evaluation date | Grain is one row per customer per eval date; DQ PK constraint: (partition_eval_mst_date, shopper_id) |
+| total_ttm_gcr_usd_amt | `SUM(customer_life_cycle.ttm_gcr_usd_amt)` | Total gross cash received (GCR) in USD across trailing twelve months for all selected customers | PySpark `SUM(ttm_total_gcr_usd_amt)` in `get_ttm_payment_df`; Alation: "Trailing twelve month (TTM) GCR" |
+| active_customer_count | `COUNT(DISTINCT CASE WHEN customer_life_cycle.active_status_flag = true THEN customer_life_cycle.shopper_id END)` | Number of distinct active shoppers at the evaluation date | Alation: "lifecycle tracking"; Confluence: "ALL customers"; active_status_flag is a direct fact column |
+| avg_product_pnl_category_qty | `AVG(customer_life_cycle.product_pnl_category_qty)` | Average number of distinct product PNL categories per customer (product breadth) | PySpark `COUNT(DISTINCT product_pnl_category)` in `get_subscription_detail_df` producing `product_pnl_category_qty` column |
+
+**Notes on excluded metrics:**
+- Array fields (active_paid_subscription_list, product_pnl_category_list, product_pnl_line_list, ttm_all_bill_list, brand_name_list) are NOT suitable for OSI aggregate expressions — see do-not-claim section.
 
 ---
 
-### Step 8: Semantic Model Metadata
+## Step 8: Semantic Model Metadata
 
-**Model name:** `customer360_customer_life_cycle_analytics`
-- Derived from schema `customer360` + table `customer_life_cycle` + suffix `analytics`
-- No `semantic_model_name` override provided in INPUT.md
-
-**Model description:**
-> Daily snapshot model tracking the complete lifecycle journey of GoDaddy customers from acquisition through active, churned, reactivated, merged, and fraud states. Captures per-customer trailing twelve-month GCR, active subscription inventory, reseller context, geographic attributes, and lifecycle event dates. Primary OSI and OWL target in the Customer360 domain (35% domain weight). Stakeholders: Finance and Marketing (business stewards), DAP, FORGE. Data tier: 4. Delivered daily by 08:00 AM MST.
+| Field | Value |
+|---|---|
+| Model name | `customer360_customer_life_cycle_analytics` |
+| Source schema | `customer360` |
+| Source table | `customer_life_cycle_vw` |
+| Description | Single source of truth for customer lifecycle state and history. Captures daily snapshots of customer status from acquisition through churn, reactivation, and merge. Includes TTM GCR revenue, active subscription product breadth, geographic acquisition context, and fraud indicators. Primary OSI and OWL target for the Customer360 domain (Confluence 4387965088). Replaces lifecycle logic previously spread across multiple marts. |
 
 **ai_context draft:**
 ```
 instructions: >
-  Use this model to analyze GoDaddy customer lifecycle states, acquisition channels,
-  retention/churn, trailing twelve-month revenue (TTM GCR), and active subscription
-  inventory. The fact dataset is partitioned by partition_eval_mst_date — always filter
-  on this column for performance. customer_state_enum enumerates five states:
-  active, churned, reactivated, merged, intraday. For geographic analysis, join
-  dim_country_vw on customer_acquisition_country_code = country_code (and filter
-  current_record_flag = true). For reseller analysis, join dim_reseller on reseller_type_id.
-  For customer profile details, join dim_customer_history_vw on customer_id (filter
-  current_record_flag = true for current state). The active_paid_subscription_list column
-  is an array — use UNNEST/LATERAL to join to dim_subscription_history.
-  Do NOT use customer_core_conformed.* staging tables as data sources.
+  This model tracks daily customer lifecycle states. ALWAYS filter by
+  partition_eval_mst_date for point-in-time queries — omitting this filter
+  produces a full historical scan. The composite PK is (shopper_id,
+  partition_eval_mst_date); customer_id may be null for some historical records
+  and is NOT unique alone. Array fields (active_paid_subscription_list,
+  product_pnl_category_list, product_pnl_line_list, ttm_all_bill_list,
+  brand_name_list) cannot be used in standard SQL aggregations — use
+  product_pnl_category_qty and ttm_gcr_usd_amt as scalar proxies. When joining
+  to dim_bill_line_purchase_attribution use the latest bill_line_num per bill_id.
+  When joining to dim_bill_fraud_history use current_record_flag=true to avoid
+  SCD2 fan-out. When joining to shopper_acquisition, align partition dates.
 synonyms:
   - "customer lifecycle"
-  - "customer churn"
-  - "active customers"
-  - "customer acquisition"
-  - "customer retention"
-  - "TTM GCR"
-  - "trailing twelve month revenue"
-  - "customer 360"
+  - "customer life cycle"
   - "customer state"
-  - "customer cohort"
-  - "C360"
+  - "customer status"
+  - "active customers"
+  - "churned customers"
+  - "customer 360"
+  - "C360 lifecycle"
+  - "customer journey"
 examples:
-  - "How many customers churned last month?"
-  - "What is the average customer tenure by acquisition channel?"
-  - "What is the total TTM GCR for US customers?"
-  - "Show me the count of active customers by reseller type"
-  - "Which acquisition channels produce the highest-tenure customers?"
-  - "What percentage of customers acquired this quarter are still active?"
-  - "How many customers were reactivated in Q1 2026?"
-  - "What is the product P&L category mix for active customers in Europe?"
+  - "How many active customers do we have today?"
+  - "What is total TTM GCR for US domestic customers?"
+  - "Show customer acquisition channel breakdown this month"
+  - "What percentage of customers are in each lifecycle state (active, churned, reactivated)?"
+  - "How many customers were acquired vs churned last quarter?"
+  - "What is the average product category count per active customer?"
+  - "Show TTM GCR by reseller type"
+  - "Which countries have the highest customer acquisition rate?"
+  - "How long is the average customer tenure in years?"
 ```
-
-**Ownership / SLA (for custom_extensions):**
-- Owner: `customer360` team, `dl-bi-enterprise-data@godaddy.com`
-- On-call Slack: `#marketing-data-product-engineering`
-- DAG ID: `customer-life-cycle`
-- Schedule: `20 7 * * *` (7:20 AM MST daily)
-- SLA delivery: `cron(00 15 * * ? *)` — by 08:00 AM MST
-- Data tier: 4 (TIER_4 severity)
 
 ---
 
-### Step 9: "Do Not Claim" List
+## Step 9: Do-Not-Claim Table
 
-Items tempting but NOT proven or not appropriate for OSI model:
+Items that MUST NOT become OSI datasets, relationships, or metrics:
 
-| Item | Why Excluded |
-|---|---|
-| `customer_core_conformed.*` tables as OSI dataset sources | Not in lake catalog; internal ETL drivers; violates OSI lake-table-only rule |
-| `customer_type_history` as an OSI dimension | `customer_type_name` and `customer_type_reason_desc` already denormalized into fact; redundant dimension |
-| `customer_fraud` as an OSI dimension | `customer_fraud_flag` and `customer_fraud_mst_date` already in fact; no additive value |
-| `shopper_merge` as an OSI dimension | Identity resolution detail; `customer_merge_mst_date` already in fact |
-| `ecomm_mart.bill_line_traffic_ext` as OSI dimension | Granular bill-level traffic table; `customer_acquisition_channel_name` already in fact |
-| `ecomm_mart.dim_bill_line_purchase_attribution` as OSI dimension | `point_of_purchase_name` already in fact |
-| `finance360.dim_bill_fraud_history_vw` as OSI dimension | `customer_acquisition_bill_fraud_flag` already in fact |
-| `enterprise.dim_new_acquisition_shopper` as OSI dimension | Acquisition computation input; acquisition attributes already denormalized |
-| Legacy S3 `ads_bill_line_ext` as data source | Hardcoded prod S3 path; not a lake table; pre-2022-08 legacy data only |
-| Redshift `customer360.customer_life_cycle` as OSI target | Downstream copy; not a lake table |
-| `customer_tenure_year_count` as string | Alation reports string type, but DDL and PySpark cast to int; Alation is stale |
-| Extra upstream tables in `table.yaml` lineage | `customers.customer_id_mapping_snapshot`, `ecomm_mart.entitlement_bill_type`, etc. appear in lake lineage YAML but NOT in current PySpark code; likely historical artifacts |
-| SLA = N/A | DAG documentation markdown says N/A; contradicted by policy YAML (120 min) and lake table.yaml SLA cron; documentation is incomplete |
-| Array FK as standard OSI scalar relationship | `active_paid_subscription_list → dim_subscription_history.subscription_id` requires UNNEST; not a standard scalar FK; flag for careful YAML treatment |
+| item | reason | preserve_as |
+|---|---|---|
+| customer_core_conformed.active_customer_stg as OSI dataset | Intermediate staging table; not in lake catalog | custom_extensions |
+| customer_core_conformed.customer_ttm_payment_driver as OSI dataset | Intermediate driver table; not in lake catalog | custom_extensions |
+| customer_core_conformed.customer_active_subscription_detail_driver as OSI dataset | Intermediate driver table; not in lake catalog | custom_extensions |
+| analytic_feature.customer_fraud as OSI dataset | M:M join on (shopper_id, customer_id) without guaranteed dedup; values fully denormalized as flags on fact | field_description |
+| analytic_feature.customer_type_history as OSI dataset | SCD2 table requiring time-filtered join; customer_type values fully denormalized onto fact | field_description |
+| dp_enterprise.dim_reseller as OSI dataset | PK (private_label_id) not on fact; reseller values denormalized via dim_customer_history_vw → dim_reseller chain | field_description |
+| customer360.dim_customer_history_vw as OSI dataset | SCD2 transitive intermediate for dim_reseller lookup; no direct fact columns; private_label_id not preserved on fact | ai_context |
+| enterprise.dim_subscription_history as OSI dataset | Accessed via intermediate driver (customer_active_subscription_detail_driver); FK is array (active_paid_subscription_list); not suitable for standard OSI relationship | custom_extensions |
+| enterprise.dim_new_acquisition_shopper as OSI dataset | Acquisition derivation intermediate; values fully absorbed into fact via join chain | field_description |
+| analytic_feature.shopper_merge as OSI dataset | Time-filtered SCD join; only customer_merge_mst_date flows to fact; no clean M:1 re-join | field_description |
+| ecomm_mart.bill_line_traffic_ext as OSI dataset | Complex time-filtered acquisition bill join; customer_acquisition_channel_name fully denormalized | custom_extensions |
+| s3://gd-ckpetlbatch-prod-analytic/analytic/ads_bill_line_ext/ as OSI source | Legacy hardcoded S3 path (code defect); pre-2022-08 equivalent of ecomm_mart.bill_line_traffic_ext | custom_extensions |
+| active_paid_subscription_list as OSI metric | array<string> type — incompatible with standard SQL aggregate expressions | field_description |
+| product_pnl_category_list as OSI metric | array<string> type — incompatible with standard SQL aggregate expressions | field_description |
+| product_pnl_line_list as OSI metric | array<string> type — incompatible with standard SQL aggregate expressions | field_description |
+| ttm_all_bill_list as OSI metric | array<string> type — incompatible with standard SQL aggregate expressions | field_description |
+| brand_name_list as OSI metric | array<string> type — incompatible with standard SQL aggregate expressions | field_description |
+
+---
+
+## Step 10: RESOLVED_TARGET.json — written to workspace root
+
+```json
+{
+  "schema": "customer360",
+  "table_hyphen": "customer-life-cycle-vw",
+  "table_underscore": "customer_life_cycle_vw",
+  "lake_table_path": "customer360/customer-life-cycle-vw",
+  "semantic_model_name": "customer360_customer_life_cycle_analytics",
+  "confidence": "high",
+  "evidence": [
+    "DAG customer_life_cycle_dag.py: SuccessNotificationOperator target = customer360.customer_life_cycle_vw",
+    "DAG: DataQualityOperator on customer360.customer_life_cycle_vw",
+    "DAG: S3ToRedshiftOperator + insert_customer_life_cycle.sql → customer360.customer_life_cycle_vw",
+    "Lake catalog: repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.yaml",
+    "DQ constraint: isPrimaryKey(partition_eval_mst_date, shopper_id) on customer360.customer_life_cycle_vw",
+    "Alation ID 7038345: table customer360.customer_life_cycle_vw confirmed"
+  ]
+}
+```
+
+## Step 11: PROVENANCE.json — written to workspace root
+
+See PROVENANCE.json file.
+
+---
+
+## Conflicts Carried Forward from Gather
+
+| # | Item | Impact on OSI |
+|---|---|---|
+| 1 | DAG comment "7:20 AM MST" vs cron `20 7` UTC (= ~00:20 MST) | Use `daily at 07:20 UTC` in custom_extensions refresh_cadence |
+| 2 | Hive DDL PK comment lists `resource_id, product_family_name, entitlement_addon_id` — copy-paste error | Use DQ-confirmed PK: (partition_eval_mst_date, shopper_id) |
+| 3 | Lake lineage YAML lists 20 upstream tables; PySpark only reads 15+1 directly | OSI lineage uses PySpark code (authoritative); table.yaml lineage captures broader data lineage in provenance |
+| 4 | Legacy S3 path hardcoded to prod | Recorded in provenance legacy_sources; not an OSI dataset |
+| 5 | Gather stage reported "42 columns" / "44 columns" in DDLs | Both lake DDL and Hive DDL confirmed at 34 body columns + partition key |
 
 
 **The agent's final response to the user was:**
-The analysis stage is complete. Here's a summary of what was done:
+Both JSON files are valid. Here is a summary of all research and work done in this analysis stage:
 
 ---
 
-## Analysis Summary
+## Analysis Stage Summary
 
 ### Target Table Resolved
-**`customer360.customer_life_cycle_vw`** — confirmed `high` confidence from:
-- Lake registry at `dlms-api/us-west-2/customer360/customer-life-cycle-vw/`
-- DAG `SuccessNotificationOperator` (prod-only lake view promotion)
-- Internal staging table `customer_core_conformed.customer_life_cycle` is **not** the OSI target
+- **Lake table:** `customer360.customer_life_cycle_vw` (high confidence)
+- **Lake registry path:** `dlms-api/us-west-2/customer360/customer-life-cycle-vw/`
+- **Grain:** one row per `(shopper_id, partition_eval_mst_date)`
+- **PK:** `(partition_eval_mst_date, shopper_id)` — confirmed by DQ constraints (Hive DDL PK comment was a copy-paste error)
+- **Column count corrected:** both lake DDL and Hive DDL have 34 body columns + partition key (gather stage over-counted as 42/44)
 
 ### Lineage Resolution (16 sources)
-- **12 lake tables** confirmed in `repos/lake/` (analytic_feature, enterprise, ecomm_mart, finance360, dp_enterprise, customer360)
-- **3 internal driver tables** (`customer_core_conformed.*`) — NOT lake tables; produced by sibling pipelines; excluded from OSI sources
-- **1 legacy S3 path** — hardcoded prod S3; unresolved/excluded
+- **13 lake tables found** in catalog — 9 in `us-west-2/`, 4 in `dlms-api/us-west-2/`
+- **3 intermediate tables NOT in lake catalog** (`customer_core_conformed.*`) — traced to `customer_core_conformed` schema with no catalog entries
+- **1 transitive source** — `enterprise.dim_subscription_history` reached via `customer_active_subscription_detail_driver`
+- **1 legacy S3 path** — pre-2022-08 hardcoded prod path equivalent to `ecomm_mart.bill_line_traffic_ext`
 
-### OSI Datasets (6)
-| Dataset | Role | Source |
+### OSI Dataset Classification
+| Role | Count | Tables |
 |---|---|---|
-| `customer_life_cycle_vw` | FACT | `customer360.customer_life_cycle_vw` |
-| `shopper_acquisition` | DIM | `analytic_feature.shopper_acquisition` |
-| `dim_reseller` | DIM | `dp_enterprise.dim_reseller` |
-| `dim_country_vw` | DIM | `finance360.dim_country_vw` |
-| `dim_customer_history_vw` | DIM | `customer360.dim_customer_history_vw` |
-| `dim_subscription_history` | DIM | `enterprise.dim_subscription_history` |
+| Fact | 1 | `customer360.customer_life_cycle_vw` |
+| Dimensions | 4 | shopper_acquisition, dim_country_vw, dim_bill_line_purchase_attribution, dim_bill_fraud_history_vw |
+| Materialized direct reads | 6 | customer_type_history, dim_reseller, shopper_merge, bill_line_traffic_ext, dim_customer_history_vw, dim_new_acquisition_shopper |
+| Excluded dimension | 1 | customer_fraud (M:M join) |
 
-### 5 Relationships, 5 Metrics, Full Field Inventory
-All documented in `analyze.md` with DDL-sourced column types and `is_time` flags.
+### Relationships: 4
+`life_cycle_to_shopper_acquisition`, `life_cycle_to_dim_country`, `life_cycle_to_dim_bill_line_purchase_attribution`, `life_cycle_to_dim_bill_fraud_history`
+
+### Metrics: 3 (evidence-based only)
+`total_ttm_gcr_usd_amt`, `active_customer_count`, `avg_product_pnl_category_qty`
 
 ### Outputs Written
-- `analyze.md` — full structured analysis appended (Steps 2–9)
-- `RESOLVED_TARGET.json` — high-confidence target resolution for downstream YAML generation
+- **`analyze.md`** — full structured analysis appended
+- **`RESOLVED_TARGET.json`** — target table contract (valid JSON)
+- **`PROVENANCE.json`** — 17 do-not-claim entries, 3 intermediate tables, 1 transitive source, 6 materialized reads, 5 array field guards (valid JSON)

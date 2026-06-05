@@ -124,7 +124,9 @@ Outputs appear under `output/<identifier>/<name>/`.
 | `INPUT.md` | Run parameters |
 | `gather.md` | Stage 1 raw facts |
 | `analyze.md` | Stage 2 lineage + OSI concept mapping |
+| `PROVENANCE.json` | Stage 2 machine-readable lineage (workspace artifact; used by generate/validate) |
 | `generate.md` | Stage 3 summary |
 | `validate.md` | Stage 4 validation report |
-| `<schema>.<table>.yaml` | Final OSI semantic model (deliverable) |
+| `<schema>.<table>.yaml` | Final OSI semantic model (deliverable); includes provenance in field descriptions, `ai_context`, and `custom_extensions.pipeline_lineage` |
 | `.workspace/repos/<repo>/<...>/src/semantics/<schema>.<table>.yaml` | Same model placed in source repo `src/semantics/` (workspace preserved on success) |
+| PR in source repo | `run.sh` opens a PR in the PySpark repo (not moon-unit-missions) on branch `semantic-model/<schema>.<table>` |

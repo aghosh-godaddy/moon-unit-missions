@@ -6,9 +6,13 @@
   "semantic_model_name": "customer360_customer_life_cycle_analytics",
   "confidence": "high",
   "evidence": [
-    "repos/dof-dpaas-customer-feature/customer360/customer-metrics/src/dag/customer_life_cycle_dag.py: SuccessNotificationOperator targets customer360.customer_life_cycle_vw (prod env only)",
-    "repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.yaml: exists in lake registry with description 'Analytic Dataset for Customer Life Cycle', data_tier=4",
-    "repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.ddl: canonical 34-column DDL for lake view",
-    "repos/dof-dpaas-customer-feature/customer360/customer-metrics/src/pyspark/customer_life_cycle.py: insertInto('customer_core_conformed.customer_life_cycle', overwrite=True) — internal staging table promoted to lake view via DAG post-step"
+    "DAG customer360/customer-metrics/src/dag/customer_life_cycle_dag.py: SuccessNotificationOperator target = customer360.customer_life_cycle_vw",
+    "DAG: DataQualityOperator on customer360.customer_life_cycle_vw partitioned by partition_eval_mst_date",
+    "DAG: S3ToRedshiftOperator + insert_customer_life_cycle.sql → customer360.customer_life_cycle_vw",
+    "Lake catalog: repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-life-cycle-vw/table.yaml confirmed",
+    "Lake table.yaml: description='Analytic Dataset for Customer Life Cycle', data_tier=4, storage_format=Parquet, table_type=PARTITIONED",
+    "DQ constraint src/data_quality/constraints/customer_life_cycle_vw.json: isPrimaryKey(partition_eval_mst_date, shopper_id) on customer360.customer_life_cycle_vw",
+    "Alation ID 7038345: table customer360.customer_life_cycle_vw, connector=Athena, HIGH_CONFIDENCE auto-title",
+    "Confluence 4387965088: customer_life_cycle_vw Type=PARTITIONED, Tier=4, Grain='One row per customer per eval date'"
   ]
 }
