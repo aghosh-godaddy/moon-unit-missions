@@ -1,0 +1,16 @@
+{
+  "schema": "customer360",
+  "table_hyphen": "customer-metric-daily-agg-vw",
+  "table_underscore": "customer_metric_daily_agg_vw",
+  "lake_table_path": "customer360/customer-metric-daily-agg-vw",
+  "semantic_model_name": "customer360_customer_metric_daily_agg",
+  "confidence": "high",
+  "evidence": [
+    "repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.yaml — confirms lake registration, table_relative_path=customer_metric_daily_agg, database=customer360",
+    "repos/lake/catalog/config/prod/dlms-api/us-west-2/customer360/customer-metric-daily-agg-vw/table.ddl — lake-registered DDL with 30 columns + partition_eval_mst_date",
+    "repos/dof-dpaas-customer-feature/customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py: HIVE_TABLE='customer_metric_daily_agg', DATABASE_NAME='customer_core_conformed', insertInto overwrite",
+    "repos/dof-dpaas-customer-feature/customer360/customer-metrics/src/dag/customer_metric_daily_agg_dag.py: SuccessNotificationOperator references customer360.customer_metric_daily_agg_vw",
+    "repos/dof-dpaas-customer-feature/customer360/customer-metrics/src/dag/customer_metric_daily_agg_dag.py: S3KeySensor waits for customer360/customer_metric_daily_agg_vw/_SUCCESS",
+    "gather.md §1: Write target confirmed as customer_core_conformed.customer_metric_daily_agg; lake view confirmed as customer360.customer_metric_daily_agg_vw"
+  ]
+}
