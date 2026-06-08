@@ -1,0 +1,990 @@
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: customer360_customer_metric_daily_agg
+    description: >
+      Daily aggregated customer performance metrics by reporting dimensions. Provides KPIs
+      including active, new, churned, reactivated, and merged customer counts; net movement;
+      and trailing 12-month gross cash received (GCR), segmented by customer type, geography,
+      product ownership, acquisition channel, tenure, reseller type, and fraud status.
+      Source: Business Metrics Layer in the Customer360 data product (GoDaddy DNA / EDT team).
+    ai_context:
+      instructions: >
+        Use this model for analyzing pre-aggregated daily customer performance metrics.
+
+        GRAIN: One row per partition_eval_mst_date × unique combination of 18 dimension columns:
+        customer_type_reason_desc, customer_acquisition_mst_month,
+        customer_domestic_international_name, customer_region_1_name, customer_region_2_name,
+        customer_region_3_name, customer_country_name, customer_country_code, customer_type_name,
+        acquisition_channel_name, customer_tenure_year_count, product_ownership_category_list,
+        product_ownership_line_list, reseller_type_name, fraud_flag, point_of_purchase_name,
+        customer_acquisition_bill_fraud_flag, brand_name_list.
+
+        REQUIRED PARTITION FILTER: Always filter by partition_eval_mst_date to avoid full table
+        scans. This column is the partition key (string, yyyy-MM-dd, MST).
+
+        PRIMARY KEY CAVEATS: The composite PK is 19 columns (18 dimension attributes +
+        partition_eval_mst_date). No customer_id or shopper_id exists in this table — individual
+        customer identity is aggregated away. Lake DDL @PrimaryKey annotations cover only 16
+        columns; DQ isPrimaryKey constraints and PySpark GROUP BY are authoritative for all 19.
+
+        POINT-IN-TIME METRICS: ending_customer_qty and beginning_customer_qty are stock
+        snapshots — do NOT sum across multiple partition_eval_mst_date values; doing so
+        double-counts the customer base. Always filter to a single date or use MAX for trend.
+
+        PERIOD-ADDITIVE METRICS: new_customer_qty, churn_customer_qty, reactivate_customer_qty,
+        merge_customer_qty, net_add_qty, net_churn_qty, and net_move_qty are flow metrics and
+        may be summed across date ranges for period totals.
+
+        TTM WARNING: ttm_gcr_usd_amt holds a trailing 12-month GCR window anchored at each
+        evaluation date. TTM windows overlap across dates — do NOT sum across multiple
+        partition_eval_mst_date values (overlapping windows inflate results). Use only with a
+        single-date filter.
+
+        ARRAY FIELDS (string-encoded, not filterable as lists):
+        - product_ownership_category_list is stored as cast(sort_array(product_pnl_category_list)
+          as string). Use product_category_qty (scalar proxy) for numeric aggregations.
+        - product_ownership_line_list is stored as cast(sort_array(product_pnl_line_list) as
+          string). No scalar proxy; use as GROUP BY dimension only.
+        - brand_name_list is stored as cast(sort_array(brand_name_list) as string). No scalar
+          proxy; use as GROUP BY dimension only.
+        None of these fields can be unnested or aggregated as arrays at query time.
+
+        EXCLUDED JOIN TARGETS: customer360.customer_life_cycle_vw is the upstream source for
+        this fact but cannot be joined via a standard FK — the fact has no customer_id or
+        shopper_id. Use the denormalized dimension columns already on the fact (customer_type_name,
+        customer_country_name, acquisition_channel_name, etc.) instead of attempting to join back
+        to customer_life_cycle_vw. The source array fields active_paid_subscription_list and
+        ttm_all_bill_list from customer_life_cycle_vw are fully aggregated away in this fact and
+        are NOT present here. Similarly, customer_fraud_mst_date and customer_state_enum from
+        customer_life_cycle_vw are aggregated away and not available in this model.
+
+        INTERNAL ETL NOTE: beginning_customer_qty is backfilled via a LEFT ANTI JOIN self-join
+        pattern in PySpark to insert zero-valued rows for dimension combinations absent on a given
+        date; this is an ETL-internal mechanism, not a semantic dataset relationship.
+        data_source_enum (hardcoded 'customer360') exists in in-repo DDL and PySpark
+        conform_datatype() output but is absent from the lake-registered table.ddl; it is not
+        modeled as an analytics field.
+      synonyms:
+        - "customer metrics"
+        - "daily customer KPIs"
+        - "customer scorecard"
+        - "active customers"
+        - "customer churn metrics"
+        - "customer acquisition metrics"
+        - "GCR by customer segment"
+        - "customer lifecycle metrics"
+        - "customer health metrics"
+        - "business metrics layer"
+        - "customer360 metrics"
+        - "customer daily aggregation"
+      examples:
+        - "How many customers churned last month by region?"
+        - "What is the ending active customer count by customer type as of yesterday?"
+        - "Show net new customer additions by acquisition channel for Q1 2025"
+        - "What is the TTM gross cash received by country for the most recent date?"
+        - "How many customers were reactivated last week by reseller type?"
+        - "What is the daily net add trend for domestic customers over the past 90 days?"
+        - "Which customer type had the highest churn rate on a given date?"
+
+    datasets:
+      - name: customer_metric_daily_agg
+        source: customer360.customer_metric_daily_agg_vw
+        primary_key:
+          - partition_eval_mst_date
+          - customer_type_reason_desc
+          - customer_acquisition_mst_month
+          - customer_domestic_international_name
+          - customer_region_1_name
+          - customer_region_2_name
+          - customer_region_3_name
+          - customer_country_name
+          - customer_country_code
+          - customer_type_name
+          - acquisition_channel_name
+          - customer_tenure_year_count
+          - product_ownership_category_list
+          - product_ownership_line_list
+          - reseller_type_name
+          - fraud_flag
+          - point_of_purchase_name
+          - customer_acquisition_bill_fraud_flag
+          - brand_name_list
+        unique_keys:
+          - - partition_eval_mst_date
+            - customer_type_reason_desc
+            - customer_acquisition_mst_month
+            - customer_domestic_international_name
+            - customer_region_1_name
+            - customer_region_2_name
+            - customer_region_3_name
+            - customer_country_name
+            - customer_country_code
+            - customer_type_name
+            - acquisition_channel_name
+            - customer_tenure_year_count
+            - product_ownership_category_list
+            - product_ownership_line_list
+            - reseller_type_name
+            - fraud_flag
+            - point_of_purchase_name
+            - customer_acquisition_bill_fraud_flag
+            - brand_name_list
+        description: >
+          Pre-aggregated daily customer metrics fact table. One row per partition_eval_mst_date ×
+          unique combination of 18 reporting dimension columns. Populated by PySpark job
+          customer_metric_daily_agg.py writing to Hive table
+          customer_core_conformed.customer_metric_daily_agg (intermediate; not in lake catalog);
+          the lake-registered public view is customer360.customer_metric_daily_agg_vw.
+          Source data is aggregated from customer_core_conformed.customer_life_cycle
+          (lake equivalent: customer360.customer_life_cycle_vw) via GROUP BY on 19 columns.
+          NOTE: data_source_enum (hardcoded value 'customer360') is present in the in-repo DDL
+          and PySpark conform_datatype() output but is absent from the lake-registered table.ddl;
+          it is excluded from the OSI model as it carries no analytic value.
+        ai_context:
+          synonyms:
+            - "customer daily aggregation"
+            - "customer performance fact"
+            - "customer KPI fact table"
+            - "customer metric aggregation"
+            - "customer_metric_daily_agg_vw"
+
+        fields:
+          - name: partition_eval_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: partition_eval_mst_date
+            dimension:
+              is_time: true
+            description: >
+              Evaluation date in MST (string, yyyy-MM-dd format). Partition key — always required
+              as a filter to avoid full table scans. Composite PK member (authoritative 19-column
+              PK from DQ isPrimaryKey constraints and PySpark GROUP BY; lake DDL @PrimaryKey
+              annotations cover only 16 columns and omit this column, but that is a DDL
+              discrepancy — code is authoritative).
+            ai_context:
+              synonyms:
+                - "eval date"
+                - "evaluation date"
+                - "snapshot date"
+                - "reporting date"
+                - "partition date"
+                - "as-of date"
+
+          - name: customer_type_reason_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_type_reason_desc
+            dimension:
+              is_time: false
+            description: >
+              Reason for customer type classification at evaluation date. GROUP BY dimension;
+              default 'Not Classified'. Composite PK member.
+            ai_context:
+              synonyms:
+                - "customer type reason"
+                - "classification reason"
+                - "customer type description"
+
+          - name: customer_acquisition_mst_month
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_mst_month
+            dimension:
+              is_time: true
+            description: >
+              Month of customer acquisition in MST, formatted as yyyy-MM. GROUP BY dimension;
+              default '' (empty string). Composite PK member.
+            ai_context:
+              synonyms:
+                - "acquisition month"
+                - "customer start month"
+                - "cohort month"
+                - "acquisition cohort"
+
+          - name: customer_domestic_international_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_domestic_international_name
+            dimension:
+              is_time: false
+            description: >
+              Domestic vs International customer classification at evaluation date. GROUP BY
+              dimension; default 'International'. Composite PK member.
+            ai_context:
+              synonyms:
+                - "domestic international"
+                - "geography type"
+                - "domestic vs international"
+                - "customer geography classification"
+
+          - name: customer_region_1_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_region_1_name
+            dimension:
+              is_time: false
+            description: >
+              Geographic region level 1 (top-level) at evaluation date. GROUP BY dimension;
+              default 'International - RoW'. Composite PK member.
+            ai_context:
+              synonyms:
+                - "region 1"
+                - "top-level region"
+                - "geo region level 1"
+                - "region"
+
+          - name: customer_region_2_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_region_2_name
+            dimension:
+              is_time: false
+            description: >
+              Geographic region level 2 (sub-region) at evaluation date. GROUP BY dimension;
+              default 'Rest of World (RoW)'. Composite PK member.
+            ai_context:
+              synonyms:
+                - "region 2"
+                - "sub-region"
+                - "geo region level 2"
+
+          - name: customer_region_3_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_region_3_name
+            dimension:
+              is_time: false
+            description: >
+              Geographic region level 3 at evaluation date. GROUP BY dimension; default 'NA'.
+              Composite PK member.
+            ai_context:
+              synonyms:
+                - "region 3"
+                - "geo region level 3"
+                - "sub-sub-region"
+
+          - name: customer_country_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_country_name
+            dimension:
+              is_time: false
+            description: >
+              Customer country name at evaluation date. Derived from
+              customer_acquisition_country_name in source customer_life_cycle_vw. Default
+              'Unknown'. Composite PK member.
+            ai_context:
+              synonyms:
+                - "country"
+                - "customer country"
+                - "country name"
+
+          - name: customer_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_country_code
+            dimension:
+              is_time: false
+            description: >
+              Customer country code at evaluation date (ISO 3166 alpha-2). UK is normalized to GB
+              via WHEN upper(customer_country_code) = 'UK' THEN 'GB' post-aggregation transform.
+              Derived from customer_acquisition_country_code in source customer_life_cycle_vw.
+              Default '--'. Composite PK member.
+            ai_context:
+              synonyms:
+                - "country code"
+                - "ISO country code"
+                - "2-letter country code"
+
+          - name: customer_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_type_name
+            dimension:
+              is_time: false
+            description: >
+              Customer type classification at evaluation date. GROUP BY dimension; default
+              'Not Classified'. Composite PK member.
+            ai_context:
+              synonyms:
+                - "customer type"
+                - "customer segment"
+                - "customer category"
+
+          - name: acquisition_channel_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: acquisition_channel_name
+            dimension:
+              is_time: false
+            description: >
+              Acquisition channel name. Derived from customer_acquisition_channel_name in source
+              customer_life_cycle_vw. Default 'Not GA Attributed'. Composite PK member.
+            ai_context:
+              synonyms:
+                - "acquisition channel"
+                - "channel"
+                - "marketing channel"
+                - "customer channel"
+
+          - name: customer_tenure_year_count
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_tenure_year_count
+            dimension:
+              is_time: false
+            description: >
+              Customer tenure in whole years (integer) at evaluation date. GROUP BY dimension;
+              default 0. Composite PK member.
+            ai_context:
+              synonyms:
+                - "tenure"
+                - "customer tenure"
+                - "years as customer"
+                - "customer age in years"
+                - "tenure band"
+
+          - name: product_ownership_category_list
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_ownership_category_list
+            dimension:
+              is_time: false
+            description: >
+              Owned product P&L category list stored as a string-encoded sorted array:
+              cast(sort_array(product_pnl_category_list) as string). Source in
+              customer_life_cycle_vw is product_pnl_category_list (array<string>). This field
+              is NOT filterable as a comma-separated list and NOT suitable for unnesting or
+              aggregation at query time. Use product_category_qty as a scalar proxy for counting
+              the number of owned product categories. GROUP BY dimension; Composite PK member.
+            ai_context:
+              synonyms:
+                - "product category list"
+                - "product categories"
+                - "P&L category list"
+                - "owned product categories"
+
+          - name: product_ownership_line_list
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_ownership_line_list
+            dimension:
+              is_time: false
+            description: >
+              Owned product P&L line list stored as a string-encoded sorted array:
+              cast(sort_array(product_pnl_line_list) as string). Source in customer_life_cycle_vw
+              is product_pnl_line_list (array<string>). This field is NOT filterable as a
+              comma-separated list and NOT suitable for unnesting or aggregation at query time.
+              No scalar proxy available; use as GROUP BY dimension only. Composite PK member.
+            ai_context:
+              synonyms:
+                - "product line list"
+                - "product lines"
+                - "P&L line list"
+                - "owned product lines"
+
+          - name: reseller_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_type_name
+            dimension:
+              is_time: false
+            description: >
+              Reseller type name at evaluation date. GROUP BY dimension; default 'na' (coalesced
+              in LEFT ANTI JOIN backfill self-join). Composite PK member.
+            ai_context:
+              synonyms:
+                - "reseller type"
+                - "reseller"
+                - "reseller category"
+
+          - name: fraud_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fraud_flag
+            dimension:
+              is_time: false
+            description: >
+              True if the customer was marked as fraud as of evaluation date. Derived from
+              customer_fraud_flag in source customer_life_cycle_vw. Default false. GROUP BY
+              dimension; Composite PK member.
+            ai_context:
+              synonyms:
+                - "fraud"
+                - "fraud indicator"
+                - "customer fraud flag"
+                - "is fraud"
+                - "fraudulent customer"
+
+          - name: point_of_purchase_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: point_of_purchase_name
+            dimension:
+              is_time: false
+            description: >
+              Point of purchase name from the customer's acquisition bill. Default 'Unknown'.
+              GROUP BY dimension; Composite PK member. NOTE: lake DDL @PrimaryKey annotations
+              omit this column; DQ isPrimaryKey constraints and PySpark GROUP BY are authoritative
+              — it is a full 19-column PK member.
+            ai_context:
+              synonyms:
+                - "point of purchase"
+                - "POP"
+                - "purchase point"
+                - "acquisition point of purchase"
+
+          - name: customer_acquisition_bill_fraud_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_acquisition_bill_fraud_flag
+            dimension:
+              is_time: false
+            description: >
+              True if the customer's acquisition bill has a fraud record. Default false. GROUP BY
+              dimension; Composite PK member. NOTE: lake DDL @PrimaryKey annotations omit this
+              column; DQ isPrimaryKey constraints and PySpark GROUP BY are authoritative — it is
+              a full 19-column PK member.
+            ai_context:
+              synonyms:
+                - "acquisition bill fraud"
+                - "acquisition fraud flag"
+                - "bill fraud flag"
+
+          - name: brand_name_list
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: brand_name_list
+            dimension:
+              is_time: false
+            description: >
+              All brand names associated with the customer stored as a string-encoded sorted array:
+              cast(sort_array(brand_name_list) as string). Source in customer_life_cycle_vw is
+              brand_name_list (array<string>). This field is NOT filterable as a comma-separated
+              list and NOT suitable for unnesting or aggregation at query time. No scalar proxy
+              available; use as GROUP BY dimension only. Composite PK member.
+            ai_context:
+              synonyms:
+                - "brand list"
+                - "brands"
+                - "customer brands"
+                - "brand names"
+
+          - name: product_category_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_category_qty
+            dimension:
+              is_time: false
+            description: >
+              Number of distinct owned product P&L categories for the customer group. Derived as
+              coalesce(size(product_ownership_category_list), 0) per row in PySpark. Scalar proxy
+              for the string-encoded array field product_ownership_category_list. Use this column
+              for numeric aggregations over product category counts rather than operating on the
+              array-encoded product_ownership_category_list string.
+            ai_context:
+              synonyms:
+                - "product category count"
+                - "number of product categories"
+                - "product category size"
+                - "owned category count"
+
+          - name: ttm_gcr_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ttm_gcr_usd_amt
+            dimension:
+              is_time: false
+            description: >
+              Total gross cash received (GCR) in USD over the trailing twelve months (TTM)
+              anchored at the evaluation date. Aggregated as SUM(ttm_gcr_usd_amt) over the
+              GROUP BY dimension set from source customer_life_cycle_vw. WARNING: TTM windows
+              overlap across evaluation dates — do NOT sum this column across multiple
+              partition_eval_mst_date values; use a single-date filter to avoid double-counting
+              overlapping TTM periods.
+            ai_context:
+              synonyms:
+                - "TTM GCR"
+                - "trailing 12-month GCR"
+                - "gross cash received"
+                - "GCR"
+                - "TTM revenue"
+                - "trailing twelve months revenue"
+
+          - name: ending_customer_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ending_customer_qty
+            dimension:
+              is_time: false
+            description: >
+              Active customer count at end of evaluation date. Derived from
+              COUNT_IF(active_status_flag = true) in source customer_life_cycle_vw. POINT-IN-TIME
+              stock metric — do NOT sum across multiple partition_eval_mst_date values; use a
+              single-date filter or MAX for trend analysis.
+            ai_context:
+              synonyms:
+                - "active customers"
+                - "ending active customers"
+                - "customer count"
+                - "total customers"
+                - "active customer count"
+                - "customer base"
+
+          - name: churn_customer_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: churn_customer_qty
+            dimension:
+              is_time: false
+            description: >
+              Count of customers who churned on the evaluation date. Derived from
+              COUNT_IF(customer_churn_mst_date IS NOT NULL) in source customer_life_cycle_vw.
+              Period-additive flow metric — may be summed across date ranges.
+            ai_context:
+              synonyms:
+                - "churned customers"
+                - "customer churn count"
+                - "churn qty"
+                - "customers lost"
+                - "churn"
+
+          - name: merge_customer_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: merge_customer_qty
+            dimension:
+              is_time: false
+            description: >
+              Count of customers involved in an account merge on the evaluation date. Derived from
+              COUNT_IF(customer_merge_mst_date IS NOT NULL) in source customer_life_cycle_vw.
+              Period-additive flow metric — may be summed across date ranges.
+            ai_context:
+              synonyms:
+                - "merged customers"
+                - "account merges"
+                - "merge count"
+                - "customer merges"
+
+          - name: new_customer_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_customer_qty
+            dimension:
+              is_time: false
+            description: >
+              Count of new customers acquired on the evaluation date (acquisition date equals
+              eval date). Derived from
+              COUNT_IF(customer_acquisition_mst_date = partition_eval_mst_date) in source
+              customer_life_cycle_vw. Period-additive flow metric — may be summed across date
+              ranges to compute total new customers over a period.
+            ai_context:
+              synonyms:
+                - "new customers"
+                - "new acquisitions"
+                - "customer acquisitions"
+                - "newly acquired customers"
+                - "customer adds"
+
+          - name: reactivate_customer_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reactivate_customer_qty
+            dimension:
+              is_time: false
+            description: >
+              Count of customers reactivated on the evaluation date. Derived from
+              COUNT_IF(customer_reactivate_mst_date IS NOT NULL) in source customer_life_cycle_vw.
+              Period-additive flow metric — may be summed across date ranges.
+            ai_context:
+              synonyms:
+                - "reactivated customers"
+                - "customer reactivations"
+                - "win-back customers"
+                - "reactivation count"
+                - "reactivations"
+
+          - name: beginning_customer_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: beginning_customer_qty
+            dimension:
+              is_time: false
+            description: >
+              Active customer count at beginning of evaluation date (prior day's ending count).
+              Computed via LAG(ending_customer_qty, 1) OVER (PARTITION BY <18 dimension columns>
+              ORDER BY partition_eval_mst_date) in PySpark; defaults to 0 if prior day is
+              non-consecutive or missing. Backfilled to 0 for dimension combinations absent on
+              the prior day via a LEFT ANTI JOIN self-join pattern in the ETL (not a semantic
+              dataset-to-dataset relationship). POINT-IN-TIME stock metric — do NOT sum across
+              multiple partition_eval_mst_date values.
+            ai_context:
+              synonyms:
+                - "beginning customers"
+                - "opening customer count"
+                - "start-of-day customers"
+                - "prior day ending customers"
+                - "opening balance customers"
+
+          - name: net_move_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: net_move_qty
+            dimension:
+              is_time: false
+            description: >
+              Net customer movement computed post-aggregation:
+              ending_customer_qty - beginning_customer_qty - new_customer_qty +
+              (churn_customer_qty - reactivate_customer_qty) + merge_customer_qty.
+              Period-additive flow metric — may be summed across date ranges.
+            ai_context:
+              synonyms:
+                - "net movement"
+                - "net customer movement"
+                - "customer movement"
+                - "net change"
+
+          - name: net_add_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: net_add_qty
+            dimension:
+              is_time: false
+            description: >
+              Net customer additions computed post-aggregation:
+              ending_customer_qty - beginning_customer_qty. Period-additive flow metric —
+              may be summed across date ranges.
+            ai_context:
+              synonyms:
+                - "net additions"
+                - "net adds"
+                - "net customer adds"
+                - "net growth"
+                - "net new customers"
+
+          - name: net_churn_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: net_churn_qty
+            dimension:
+              is_time: false
+            description: >
+              Net churn computed post-aggregation: churn_customer_qty - reactivate_customer_qty.
+              Period-additive flow metric — may be summed across date ranges.
+            ai_context:
+              synonyms:
+                - "net churn"
+                - "net churned customers"
+                - "net attrition"
+                - "gross churn less reactivations"
+
+          - name: etl_build_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_build_mst_ts
+            dimension:
+              is_time: true
+            description: >
+              ETL build timestamp in MST; from_utc_timestamp(current_timestamp(), 'MST') at job
+              execution time. Metadata column — not a business dimension or metric.
+            ai_context:
+              synonyms:
+                - "ETL timestamp"
+                - "load timestamp"
+                - "build timestamp"
+                - "pipeline run time"
+
+    metrics:
+      - name: ending_customer_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.ending_customer_qty)
+        description: >
+          Total active customers at end of evaluation date across all rows in the result set.
+          POINT-IN-TIME stock metric: do NOT sum across multiple partition_eval_mst_date values —
+          this causes double-counting of the customer base. Always apply a single-date filter on
+          partition_eval_mst_date, or use MAX for trend comparisons.
+          Evidence: PySpark COUNT_IF(active_status_flag = true).
+        ai_context:
+          synonyms:
+            - "active customer count"
+            - "total active customers"
+            - "ending customers"
+            - "customer base size"
+            - "customers at end of period"
+
+      - name: beginning_customer_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.beginning_customer_qty)
+        description: >
+          Total active customers at beginning of evaluation date (prior day's ending count) across
+          all rows in the result set. POINT-IN-TIME stock metric: do NOT sum across multiple
+          partition_eval_mst_date values. Computed via LAG in PySpark; backfilled to 0 for
+          dimension combinations missing on the prior day.
+          Evidence: PySpark LAG(ending_customer_qty, 1) OVER (PARTITION BY <18 dims> ORDER BY
+          partition_eval_mst_date).
+        ai_context:
+          synonyms:
+            - "opening customer count"
+            - "beginning customers"
+            - "start-of-day customer base"
+            - "customers at start of period"
+
+      - name: new_customer_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.new_customer_qty)
+        description: >
+          Total new customers acquired on evaluation date across all rows in the result set.
+          Period-additive flow metric: may be summed across date ranges for period totals.
+          Evidence: PySpark COUNT_IF(customer_acquisition_mst_date = partition_eval_mst_date).
+        ai_context:
+          synonyms:
+            - "new customers"
+            - "customer acquisitions"
+            - "new customer count"
+            - "acquired customers"
+            - "gross new customers"
+
+      - name: churn_customer_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.churn_customer_qty)
+        description: >
+          Total customers churned on evaluation date across all rows in the result set.
+          Period-additive flow metric: may be summed across date ranges for period totals.
+          Evidence: PySpark COUNT_IF(customer_churn_mst_date IS NOT NULL).
+        ai_context:
+          synonyms:
+            - "churned customers"
+            - "customer churn"
+            - "churn count"
+            - "lost customers"
+            - "gross churn"
+
+      - name: reactivate_customer_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.reactivate_customer_qty)
+        description: >
+          Total customers reactivated on evaluation date across all rows in the result set.
+          Period-additive flow metric: may be summed across date ranges for period totals.
+          Evidence: PySpark COUNT_IF(customer_reactivate_mst_date IS NOT NULL).
+        ai_context:
+          synonyms:
+            - "reactivated customers"
+            - "customer reactivations"
+            - "win-backs"
+            - "reactivation count"
+
+      - name: merge_customer_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.merge_customer_qty)
+        description: >
+          Total customers involved in account merges on evaluation date across all rows in the
+          result set. Period-additive flow metric: may be summed across date ranges.
+          Evidence: PySpark COUNT_IF(customer_merge_mst_date IS NOT NULL).
+        ai_context:
+          synonyms:
+            - "merged customers"
+            - "account merge count"
+            - "merge qty"
+            - "customer merges"
+
+      - name: net_add_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.net_add_qty)
+        description: >
+          Net customer additions (ending_customer_qty minus beginning_customer_qty) aggregated
+          across the result set. Period-additive flow metric: may be summed across date ranges.
+          Evidence: PySpark derived post-aggregation formula.
+        ai_context:
+          synonyms:
+            - "net adds"
+            - "net additions"
+            - "net new customers"
+            - "net growth"
+
+      - name: net_churn_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.net_churn_qty)
+        description: >
+          Net churn (churn_customer_qty minus reactivate_customer_qty) aggregated across the
+          result set. Period-additive flow metric: may be summed across date ranges.
+          Evidence: PySpark derived post-aggregation formula.
+        ai_context:
+          synonyms:
+            - "net churn"
+            - "net attrition"
+            - "net churned customers"
+            - "gross churn less reactivations"
+
+      - name: net_move_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.net_move_qty)
+        description: >
+          Net customer movement (ending - beginning - new + churn - reactivate + merge)
+          aggregated across the result set. Period-additive flow metric: may be summed across
+          date ranges. Evidence: PySpark derived post-aggregation formula.
+        ai_context:
+          synonyms:
+            - "net movement"
+            - "net customer change"
+            - "customer net movement"
+            - "waterfall net"
+
+      - name: ttm_gcr_usd_amt
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.ttm_gcr_usd_amt)
+        description: >
+          Total trailing 12-month gross cash received (GCR) in USD aggregated across the result
+          set. NOT date-additive: each row already holds a TTM window — summing across multiple
+          partition_eval_mst_date values aggregates overlapping windows and inflates results.
+          Use only with a single-date filter on partition_eval_mst_date.
+          Evidence: PySpark SUM(ttm_gcr_usd_amt) from customer_life_cycle_vw; Confluence
+          "business-ready GCR metrics".
+        ai_context:
+          synonyms:
+            - "TTM GCR"
+            - "trailing 12-month revenue"
+            - "gross cash received"
+            - "GCR revenue"
+            - "TTM revenue"
+            - "annual recurring revenue proxy"
+
+      - name: product_category_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(customer_metric_daily_agg.product_category_qty)
+        description: >
+          Total distinct product categories owned across all dimension groups in the result set.
+          Scalar proxy for the string-encoded array product_ownership_category_list; each row
+          value is coalesce(size(product_ownership_category_list), 0).
+          Evidence: PySpark coalesce(size(product_ownership_category_list), 0).
+        ai_context:
+          synonyms:
+            - "product category count"
+            - "number of product categories"
+            - "product category total"
+            - "total owned product categories"
+
+    custom_extensions:
+      - vendor_name: GODADDY
+        data: |
+          {
+            "lake_table_path": "customer360/customer-metric-daily-agg-vw",
+            "pyspark_path": "customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py",
+            "dag_name": "customer-metric-daily-agg",
+            "refresh_cadence": "Daily at 07:30 MST (cron: 30 7 * * *)",
+            "sla_delivery": "08:00 AM MST (cron(00 15 * * ? *) UTC)",
+            "data_tier": 4,
+            "partition_key": "partition_eval_mst_date",
+            "domain": "customer",
+            "sub_domain": "active-customer",
+            "organization": "DNA",
+            "team": "EDT (Emerald Data Team)",
+            "pipeline_lineage": {
+              "intermediate_tables": [
+                {
+                  "table": "customer_core_conformed.customer_metric_daily_agg",
+                  "role": "hive_write_target",
+                  "note": "Hive/Parquet table written by PySpark insertInto(overwrite=True). The lake-registered public view is customer360.customer_metric_daily_agg_vw. Not in lake catalog. DO NOT use as OSI dataset source.",
+                  "upstream_pyspark": "customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py"
+                },
+                {
+                  "table": "customer_core_conformed.customer_life_cycle",
+                  "role": "hive_read_source",
+                  "note": "Hive/Parquet table read by PySpark GROUP BY aggregation. The lake-registered public view is customer360.customer_life_cycle_vw. Not in lake catalog as customer_core_conformed.customer_life_cycle. DO NOT use as OSI dataset source.",
+                  "upstream_pyspark": "customer360/customer-metrics/src/pyspark/customer_metric_daily_agg.py"
+                }
+              ],
+              "transitive_sources": [],
+              "materialized_direct_reads": [],
+              "legacy_sources": []
+            },
+            "excluded_dimensions": [
+              {
+                "table": "customer360.customer_life_cycle_vw",
+                "reason": "no_join_key_in_fact — fact table customer_metric_daily_agg_vw has no customer_id or shopper_id FK. Joining back to customer_life_cycle_vw requires all 18 dimension columns as a composite key, including product_ownership_category_list, product_ownership_line_list, and brand_name_list which require cast(sort_array(...) as string) operations — not a standard FK join. Use denormalized dimension columns already present on the fact table instead.",
+                "fields_on_fact": [
+                  "customer_type_reason_desc",
+                  "customer_acquisition_mst_month",
+                  "customer_domestic_international_name",
+                  "customer_region_1_name",
+                  "customer_region_2_name",
+                  "customer_region_3_name",
+                  "customer_country_name",
+                  "customer_country_code",
+                  "customer_type_name",
+                  "acquisition_channel_name",
+                  "customer_tenure_year_count",
+                  "product_ownership_category_list",
+                  "product_ownership_line_list",
+                  "reseller_type_name",
+                  "fraud_flag",
+                  "point_of_purchase_name",
+                  "customer_acquisition_bill_fraud_flag",
+                  "brand_name_list",
+                  "partition_eval_mst_date"
+                ]
+              }
+            ],
+            "redshift_delivery": {
+              "note": "Redshift analytic copy of this data is loaded by DAG tasks s3_to_redshift_stg + insert_customer_metric_daily_agg into customer360.customer_metric_daily_agg (Redshift). This is NOT a lake table and must NOT be used as an OSI dataset source — it is an ETL delivery target only.",
+              "table": "customer360.customer_metric_daily_agg (Redshift)"
+            },
+            "query_guards": {
+              "grain": "one row per (partition_eval_mst_date x unique combination of 18 dimension columns): customer_type_reason_desc, customer_acquisition_mst_month, customer_domestic_international_name, customer_region_1_name, customer_region_2_name, customer_region_3_name, customer_country_name, customer_country_code, customer_type_name, acquisition_channel_name, customer_tenure_year_count, product_ownership_category_list, product_ownership_line_list, reseller_type_name, fraud_flag, point_of_purchase_name, customer_acquisition_bill_fraud_flag, brand_name_list",
+              "partition_filter": "partition_eval_mst_date",
+              "primary_key_notes": "Composite PK of 19 columns (18 dimension attributes + partition_eval_mst_date). No customer_id or shopper_id in the fact table — individual customer identity is aggregated away. Lake DDL @PrimaryKey annotations cover only 16 columns; DQ constraints (isPrimaryKey) in both local and lake JSON files and PySpark GROUP BY are authoritative for all 19 columns."
+            }
+          }

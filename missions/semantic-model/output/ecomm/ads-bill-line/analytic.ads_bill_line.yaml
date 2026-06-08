@@ -1,0 +1,3130 @@
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: analytic_ads_bill_line
+    description: >
+      Analytic Data Set (ADS) for eCommerce bill lines. Augments the core Enterprise Data
+      Store (EDS) Fact Bill / Fact Bill Line entities (ecomm360 layer) with pre-joined
+      dimensions including Customer Type, Finance PnL hierarchy, Geography,
+      Reseller/Partner info, ISC/Marketing attribution, Care (C3) attribution, fraud flags,
+      and Web Pro indicators. One row per bill line (bill_id + bill_line_num). Replaces the
+      legacy UDS Order. Refreshed daily by 7:00 AM MST. Tier 2 data product owned by the
+      Emerald Data Team (eComm domain).
+    ai_context:
+      instructions: >
+        Use this model to analyze eCommerce transactions at the bill line level.
+        GRAIN: one row per (bill_id, bill_line_num).
+        REQUIRED PARTITION FILTER: always filter on partition_bill_mst_year_month (YYYY-MM)
+        to control scan size; omitting this filter causes full-table scans.
+        PRIMARY KEY CAVEATS: Composite PK (bill_id, bill_line_num); bill_id has prefix R for
+        refunds, C for chargebacks; uniqueness enforced by DQ constraint in ads_bill_line.json.
+        REVENUE GUIDANCE: Use gcr_usd_amt as the primary revenue metric; GCR is NULL for
+        refund (refund_flag=true) and chargeback (chargeback_flag=true) transactions.
+        Use gcr_constant_currency_amt for year-over-year constant-currency comparisons.
+        ACQUISITION COUNTS: new_acquisition_flag may be true on two records for shoppers with
+        account merges; use COUNT(DISTINCT bill_id) WHERE new_acquisition_flag=true for correct
+        new customer counts.
+        NO ARRAY FIELDS: this table contains no array-type columns; all upstream arrays have
+        been flattened or aggregated during ETL.
+        EXCLUDED JOIN TARGETS (use denormalized fact columns instead):
+        customer360.dim_customer_vw is not joinable from ads_bill_line — use reseller_shopper_id
+        on the fact;
+        customer360.dim_customer_history_vw is not joinable — it was used for shopper dedup
+        only, use original_shopper_id and merged_shopper_id on the fact;
+        finance360.dim_country_vw is not in the lake catalog — use reseller_country_code and
+        reseller_country_name on the fact;
+        ecomm_core_conformed.dim_customer_registration_acquisition is an Iceberg S3 table not
+        in the lake catalog — use new_acquisition_flag, new_acquisition_bill_id, and related
+        columns on the fact;
+        reference_cln.tld_registry_reference_cln is not directly joinable — use
+        domain_back_end_registry_name and related domain columns on the fact.
+        REDSHIFT ARTIFACTS (do not reference as lake datasets):
+        ecomm_prod.ads_bill_line is a Redshift copy of this table;
+        dna_approved.bill_line and dna_approved.uds_order are Redshift materialized views
+        downstream of this table — they are not lake tables.
+      synonyms:
+        - ADS bill line
+        - ads_bill_line
+        - analytic bill line
+        - ecommerce orders
+        - ecomm transactions
+        - UDS order replacement
+        - bill line analytics
+        - order revenue
+        - bill line detail
+        - ecomm bill line
+      examples:
+        - What is total GCR by product PnL category last month?
+        - Show new customer acquisition count by region this year
+        - What is the revenue breakdown by reseller type?
+        - How many domain purchases had bulk pricing last quarter?
+        - What is the Care rep attribution rate for US customers?
+        - Show YoY constant currency revenue by market region
+        - What is the average receipt price for renewal vs new products?
+
+    datasets:
+
+      # ──────────────────────────────────────────────────────────────
+      # FACT: analytic.ads_bill_line
+      # ──────────────────────────────────────────────────────────────
+      - name: ads_bill_line
+        source: analytic.ads_bill_line
+        primary_key: [bill_id, bill_line_num]
+        unique_keys:
+          - [bill_id, bill_line_num]
+        description: >
+          One row per bill line (bill_id + bill_line_num). Central eCommerce analytic fact
+          table covering all billing transactions including new orders, renewals, refunds,
+          and chargebacks. Combines ecomm360 EDS fact/dim bill views with pre-joined and
+          denormalized attributes from 20+ upstream sources.
+        ai_context:
+          synonyms:
+            - bill line
+            - order line
+            - transaction
+            - purchase record
+        fields:
+
+          # ── Identity / Keys ──
+          - name: bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_id
+            description: >
+              Unique identifier for the bill. Prefix R indicates a refund transaction;
+              prefix C indicates a chargeback. Composite PK with bill_line_num.
+
+          - name: bill_line_num
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_line_num
+            description: Line number within the bill. Composite PK with bill_id.
+
+          - name: pf_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pf_id
+            description: >
+              Product family ID. Foreign key to dim_product_snap.pf_id and
+              dim_product_hist_cln.pf_id (conditional alternate; same semantic role).
+            ai_context:
+              synonyms:
+                - product family id
+                - product id
+
+          - name: original_shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_shopper_id
+            description: >
+              Shopper ID at the time the bill was originally created. Derived from
+              customers.customer_id_mapping_snapshot via multiple ID-resolution joins.
+              Also resolved via customer360.dim_customer_history_vw (filter and dedup only;
+              that table is not directly joinable from ads_bill_line).
+
+          - name: merged_shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: merged_shopper_id
+            description: >
+              Current post-merge shopper ID. Derived from customers.customer_id_mapping_snapshot
+              via ID-resolution joins. Also resolved via customer360.dim_customer_history_vw
+              (filter and dedup only; that table is not directly joinable from ads_bill_line).
+
+          - name: original_customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_customer_id
+            description: >
+              Customer ID at the time the bill was originally created. Derived from
+              customers.customer_id_mapping_snapshot; not directly joinable.
+
+          - name: merged_customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: merged_customer_id
+            description: >
+              Current post-merge customer ID. Derived from customers.customer_id_mapping_snapshot;
+              not directly joinable.
+
+          - name: subaccount_shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: subaccount_shopper_id
+            description: >
+              Shopper ID for the subaccount associated with the bill. Derived from
+              customers.customer_id_mapping_snapshot; not directly joinable.
+
+          - name: rep_version_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: rep_version_id
+            description: Care rep version ID on the bill. Foreign key to employee_master_snap_v3.
+
+          - name: bill_isc_source_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_source_code
+            description: >
+              Internal/internet source code identifying the marketing attribution for the bill.
+              Foreign key to dim_isc_source_code.isc_source_code.
+            ai_context:
+              synonyms:
+                - ISC
+                - isc source code
+                - marketing source code
+
+          - name: private_label_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: private_label_id
+            description: >
+              ID for the private label (reseller) partner associated with the bill.
+              Foreign key to dim_reseller_vw.private_label_id.
+
+          # ── Bill Attributes ──
+          - name: bill_modified_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_modified_mst_date
+            dimension:
+              is_time: true
+            description: MST date of bill creation or last modification.
+
+          - name: bill_modified_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_modified_mst_ts
+            dimension:
+              is_time: true
+            description: MST timestamp of bill creation or last modification.
+
+          - name: bill_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_country_code
+            description: >
+              ISO country code of the payment instrument billing address. Join key to
+              dm_reference.dim_geography (geography attributes fully materialized onto fact).
+
+          - name: bill_source_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_source_name
+            description: Point-of-sale channel or purchase origin name.
+
+          - name: entered_by_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: entered_by_name
+            description: Entity or role that submitted the bill.
+
+          - name: source_system_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: source_system_name
+            description: Name of the originating system for the bill.
+
+          - name: trxn_currency_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: trxn_currency_code
+            description: >
+              ISO 4217 currency code for the transaction. Join key to
+              dp_stage.ref_order_constant_currency (constant currency amounts fully
+              materialized onto fact).
+
+          - name: translation_language_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: translation_language_name
+            description: Language of the customer's browser at purchase time.
+
+          - name: bill_sub_geo_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_sub_geo_code
+            description: Sub-geography code for the payment instrument billing address.
+
+          - name: bill_postal_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_postal_code
+            description: Postal code for the payment instrument billing address.
+
+          - name: bill_site_language_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_site_language_code
+            description: Language locale code of the website at purchase time.
+
+          # ── Financial Amounts ──
+          - name: receipt_price_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: receipt_price_usd_amt
+            description: Amount paid in USD after all discounts. Primary receipt revenue metric.
+
+          - name: receipt_price_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: receipt_price_trxn_amt
+            description: Amount paid in the transaction currency after all discounts.
+
+          - name: receipt_price_constant_currency_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: receipt_price_constant_currency_amt
+            description: >
+              Amount paid using a constant FX rate for year-over-year comparisons. Derived
+              from dp_stage.ref_order_constant_currency via trxn_currency_code join; not
+              directly joinable.
+
+          - name: receipt_regular_price_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: receipt_regular_price_usd_amt
+            description: Current standard selling price in USD (pre-discount list price).
+
+          - name: receipt_regular_price_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: receipt_regular_price_trxn_amt
+            description: Current standard selling price in the transaction currency.
+
+          - name: gcr_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: gcr_usd_amt
+            description: >
+              Gross Cash Receipts in USD. Primary revenue metric. NULL for refund and
+              chargeback transactions (refund_flag=true or chargeback_flag=true).
+            ai_context:
+              synonyms:
+                - GCR
+                - gross cash receipts
+                - revenue
+
+          - name: gcr_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: gcr_trxn_amt
+            description: >
+              Gross Cash Receipts in the transaction currency. NULL for refund and chargeback
+              transactions.
+
+          - name: gcr_constant_currency_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: gcr_constant_currency_amt
+            description: >
+              GCR using a constant FX rate for year-over-year comparisons. Derived from
+              dp_stage.ref_order_constant_currency via trxn_currency_code join; not directly
+              joinable.
+            ai_context:
+              synonyms:
+                - constant currency GCR
+                - constant currency revenue
+
+          - name: margin_gcr_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: margin_gcr_usd_amt
+            description: GCR margin in USD after cost of goods sold (COGS).
+
+          - name: margin_gcr_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: margin_gcr_trxn_amt
+            description: GCR margin in the transaction currency after COGS.
+
+          - name: msrp_total_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: msrp_total_usd_amt
+            description: Full manufacturer suggested retail (list) price in USD.
+
+          - name: msrp_total_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: msrp_total_trxn_amt
+            description: Full list price in the transaction currency.
+
+          - name: msrp_duration_unit_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: msrp_duration_unit_usd_amt
+            description: List price per billing-period unit in USD.
+
+          - name: msrp_duration_unit_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: msrp_duration_unit_trxn_amt
+            description: List price per billing-period unit in the transaction currency.
+
+          - name: fair_market_value_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fair_market_value_usd_amt
+            description: Fair market value in USD.
+
+          - name: fair_market_value_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fair_market_value_trxn_amt
+            description: Fair market value in the transaction currency.
+
+          - name: tax_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: tax_usd_amt
+            description: Tax charged in USD.
+
+          - name: tax_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: tax_trxn_amt
+            description: Tax charged in the transaction currency.
+
+          - name: commission_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: commission_usd_amt
+            description: Commission owed to a third party in USD.
+
+          - name: commission_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: commission_trxn_amt
+            description: Commission owed to a third party in the transaction currency.
+
+          - name: aftermarket_seller_commission_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: aftermarket_seller_commission_usd_amt
+            description: >
+              Commission paid to a domain aftermarket seller in USD. Derived from
+              dp_stage.ref_commission_products via pf_id join; not directly joinable.
+
+          - name: aftermarket_seller_commission_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: aftermarket_seller_commission_trxn_amt
+            description: >
+              Commission paid to a domain aftermarket seller in the transaction currency.
+              Derived from dp_stage.ref_commission_products via pf_id join; not directly
+              joinable.
+
+          - name: cost_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: cost_usd_amt
+            description: Cost of goods sold (COGS) in USD.
+
+          - name: cost_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: cost_trxn_amt
+            description: Cost of goods sold in the transaction currency.
+
+          - name: fee_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fee_usd_amt
+            description: Fee in USD (typically ICANN registration fee for domain products).
+
+          - name: fee_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: fee_trxn_amt
+            description: Fee in the transaction currency.
+
+          - name: injected_fair_market_value_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: injected_fair_market_value_usd_amt
+            description: System-injected fair market value adjustment in USD.
+
+          - name: injected_fair_market_value_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: injected_fair_market_value_trxn_amt
+            description: System-injected fair market value adjustment in the transaction currency.
+
+          - name: injected_icann_fee_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: injected_icann_fee_usd_amt
+            description: System-injected ICANN fee in USD.
+
+          - name: injected_icann_fee_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: injected_icann_fee_trxn_amt
+            description: System-injected ICANN fee in the transaction currency.
+
+          - name: injected_tax_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: injected_tax_usd_amt
+            description: System-injected tax adjustment in USD.
+
+          - name: injected_tax_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: injected_tax_trxn_amt
+            description: System-injected tax adjustment in the transaction currency.
+
+          - name: bundle_allocated_revenue_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bundle_allocated_revenue_usd_amt
+            description: Revenue allocated to this line within a bundled offer in USD.
+
+          - name: reseller_commission_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_commission_usd_amt
+            description: Commission earned by the reseller in USD.
+
+          - name: parent_reseller_commission_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: parent_reseller_commission_usd_amt
+            description: Commission earned by the parent reseller in USD.
+
+          # ── Product / PnL ──
+          - name: product_pnl_group_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_group_name
+            description: 1st level Finance PnL hierarchy group name.
+
+          - name: product_pnl_category_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_category_name
+            description: 2nd level Finance PnL hierarchy category name.
+
+          - name: product_pnl_line_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_line_name
+            description: 3rd level Finance PnL hierarchy line name.
+
+          - name: product_pnl_subline_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_subline_name
+            description: 4th level Finance PnL hierarchy sub-line name.
+
+          - name: product_pnl_version_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_version_name
+            description: Flexible pseudo-level of the PnL hierarchy (version designation).
+
+          - name: product_pnl_new_renewal_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_pnl_new_renewal_name
+            description: New or renewal designation for the product within the PnL hierarchy.
+
+          - name: original_product_pnl_new_renewal_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_product_pnl_new_renewal_name
+            description: Original new or renewal designation for the product (pre-override).
+
+          - name: pnl_new_renewal
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_new_renewal
+            description: New or renewal designation (legacy field; prefer product_pnl_new_renewal_name).
+
+          - name: product_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_name
+            description: Product name for the purchased product.
+
+          - name: product_type_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_type_desc
+            description: Product type description.
+
+          - name: product_type_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_type_id
+            description: Product type ID.
+
+          - name: product_term_num
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_term_num
+            description: Number of billing periods purchased.
+
+          - name: product_term_unit_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_term_unit_desc
+            description: Billing period unit description (month, quarter, year).
+
+          - name: unit_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: unit_qty
+            description: Number of units purchased on this bill line.
+
+          - name: product_unit_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_unit_qty
+            description: Unit quantity adjusted for units-as-orders products.
+
+          - name: duration_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: duration_qty
+            description: Subscription period in billing units (decimal).
+
+          - name: product_month_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_month_qty
+            description: Number of calendar months in the subscription period.
+
+          - name: upgraded_pf_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: upgraded_pf_id
+            description: Product family ID of the product being upgraded from (legacy field).
+
+          - name: offer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: offer_id
+            description: ID for the bundle or offer in which this product was included.
+
+          - name: offer_collection_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: offer_collection_id
+            description: ID for the parent offer collection.
+
+          - name: free_product_package_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: free_product_package_id
+            description: ID for the free product package associated with this bill line.
+
+          - name: variant_price_type_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: variant_price_type_id
+            description: Variant price type ID.
+
+          - name: variant_price_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: variant_price_type_name
+            description: Variant price type name.
+
+          # ── Geography ──
+          - name: bill_country_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_country_name
+            description: >
+              Country name corresponding to bill_country_code. Derived from
+              dm_reference.dim_geography via broadcast left join on bill_country_code;
+              not directly joinable.
+
+          - name: bill_report_region_1_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_report_region_1_name
+            description: >
+              1st-level geographic reporting region. Derived from dm_reference.dim_geography
+              via bill_country_code; not directly joinable.
+
+          - name: bill_report_region_2_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_report_region_2_name
+            description: >
+              2nd-level geographic reporting region. Derived from dm_reference.dim_geography
+              via bill_country_code; not directly joinable.
+
+          - name: bill_report_region_3_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_report_region_3_name
+            description: >
+              3rd-level geographic reporting region. Derived from dm_reference.dim_geography
+              via bill_country_code; not directly joinable.
+
+          - name: bill_report_focal_country_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_report_focal_country_name
+            description: >
+              Focal country name for geographic reporting. Derived from
+              dm_reference.dim_geography via bill_country_code; not directly joinable.
+
+          - name: bill_report_sub_region_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_report_sub_region_name
+            description: >
+              Sub-region name for geographic reporting. Derived from
+              dm_reference.dim_geography via bill_country_code; not directly joinable.
+
+          - name: bill_domestic_international_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_domestic_international_name
+            description: >
+              Domestic or International classification of the bill country. Derived from
+              dm_reference.dim_geography via bill_country_code; not directly joinable.
+
+          # ── Customer Type / PnL Segments ──
+          - name: customer_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_type_name
+            description: >
+              Customer type assigned at bill time (e.g., Independent, Partner, DRI, Commerce).
+              Derived from analytic_feature.customer_type_history via shopper_id join;
+              not directly joinable. Note: code references analytic_feature.customer_type
+              but lake lineage resolves to customer_type_history.
+            ai_context:
+              synonyms:
+                - customer segment
+                - customer classification
+
+          - name: customer_type_reason_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_type_reason_desc
+            description: >
+              Description of the reason for the customer type assignment. Derived from
+              analytic_feature.customer_type_history; not directly joinable.
+
+          - name: pnl_usi_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_usi_flag
+            description: >
+              True if the customer/bill is classified as USI (US Independent) PnL segment.
+              Derived from gmode.customer_type_gcr_logic_lookup via 7-column composite key
+              broadcast join; not directly joinable.
+
+          - name: pnl_gdii_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_gdii_flag
+            description: >
+              True if classified as GDII (GoDaddy International Independent) PnL segment.
+              Derived from gmode.customer_type_gcr_logic_lookup; not directly joinable.
+
+          - name: pnl_partner_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_partner_flag
+            description: >
+              True if classified as Partner PnL segment. Derived from
+              gmode.customer_type_gcr_logic_lookup; not directly joinable.
+
+          - name: pnl_dri_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_dri_flag
+            description: >
+              True if classified as DRI (Domain Reseller Independent) PnL segment. Derived
+              from gmode.customer_type_gcr_logic_lookup; not directly joinable.
+
+          - name: pnl_commerce_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_commerce_flag
+            description: >
+              True if classified as Commerce PnL segment. Derived from
+              gmode.customer_type_gcr_logic_lookup; not directly joinable.
+
+          - name: pnl_priority_num
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_priority_num
+            description: >
+              Priority number for PnL segment assignment (used to resolve segment precedence).
+              Derived from gmode.customer_type_gcr_logic_lookup; not directly joinable.
+
+          # ── ISC / Marketing Attribution ──
+          - name: bill_isc_source_code_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_source_code_desc
+            description: Human-readable description of the ISC source code.
+
+          - name: bill_isc_company_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_company_id
+            description: Company ID component of the ISC on the bill.
+
+          - name: bill_isc_campaign_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_campaign_id
+            description: Campaign ID component of the ISC on the bill.
+
+          - name: bill_isc_channel_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_channel_id
+            description: Channel ID component of the ISC on the bill.
+
+          - name: bill_isc_product_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_product_id
+            description: Product ID component of the ISC on the bill.
+
+          - name: bill_isc_vendor_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_vendor_id
+            description: Vendor ID component of the ISC on the bill.
+
+          - name: bill_isc_media_specialist_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_media_specialist_id
+            description: Media specialist ID component of the ISC on the bill.
+
+          - name: bill_isc_sub_channel_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_sub_channel_id
+            description: Sub-channel ID component of the ISC on the bill.
+
+          - name: bill_isc_channel_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_channel_name
+            description: Marketing channel name for the ISC on the bill.
+
+          - name: bill_isc_sub_channel_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_sub_channel_name
+            description: Marketing sub-channel name for the ISC on the bill.
+
+          - name: bill_isc_vendor_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_vendor_name
+            description: Vendor name for the ISC on the bill.
+
+          - name: bill_isc_product_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_product_name
+            description: Product name for the ISC on the bill.
+
+          - name: bill_isc_media_specialist_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_media_specialist_name
+            description: Media specialist name for the ISC on the bill (PII encrypted).
+
+          - name: bill_isc_viral_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_viral_flag
+            description: True if the ISC is classified as viral marketing.
+
+          # ── Reseller ──
+          - name: reseller_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_type_name
+            description: Reseller type name for the private label partner on the bill.
+
+          - name: reseller_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_name
+            description: Reseller name for the private label partner on the bill.
+
+          - name: reseller_shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_shopper_id
+            description: >
+              Reseller shopper ID for the bill. Derived from customer360.dim_customer_vw
+              via partner360.dim_reseller_vw (transitive); customer360.dim_customer_vw is
+              not directly joinable from ads_bill_line — use this column instead.
+
+          - name: reseller_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_country_code
+            description: >
+              Country code of the first paid reseller bill. Derived from
+              finance360.dim_country_vw via partner360.dim_reseller_vw (transitive);
+              finance360.dim_country_vw is not in the lake catalog and not directly
+              joinable — use this column instead.
+
+          - name: reseller_country_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_country_name
+            description: >
+              Country name of the first paid reseller bill. Derived from
+              finance360.dim_country_vw via partner360.dim_reseller_vw (transitive);
+              finance360.dim_country_vw is not in the lake catalog and not directly
+              joinable — use this column instead.
+
+          # ── Care / C3 Attribution ──
+          - name: c3_rep_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_rep_name
+            description: >
+              Care rep name (PII encrypted). Derived from
+              callcenterreporting.rpt_c3_orders_ordersource_snap via bill_id→order_id join;
+              not directly joinable.
+
+          - name: c3_rep_supervisor_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_rep_supervisor_name
+            description: >
+              Care rep supervisor name (PII encrypted). Derived from
+              callcenterreporting.rpt_c3_orders_ordersource_snap; not directly joinable.
+
+          - name: c3_rep_department_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_rep_department_name
+            description: >
+              Care rep department name. Derived from
+              callcenterreporting.rpt_c3_orders_ordersource_snap; not directly joinable.
+
+          - name: c3_call_center_location_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_call_center_location_name
+            description: >
+              Call center location name. Derived from
+              callcenterreporting.rpt_c3_orders_ordersource_snap; not directly joinable.
+
+          - name: c3_bill_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_bill_flag
+            description: >
+              True if the bill is attributed to a Care rep. Derived from
+              callcenterreporting.rpt_c3_orders_ordersource_snap and care_mart.rev_attribution
+              (COALESCE logic); not directly joinable.
+
+          - name: c3_attribution_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_attribution_type_name
+            description: >
+              Care revenue attribution type (e.g., assisted, inbound). Derived from
+              callcenterreporting.rpt_c3_orders_ordersource_snap and care_mart.rev_attribution
+              (COALESCE logic); not directly joinable.
+
+          - name: c3_bill_source_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_bill_source_code
+            description: >
+              Code showing how the Care rep attributed the bill. Derived from
+              callcenterreporting.rpt_c3_orders_ordersource_snap; not directly joinable.
+
+          - name: c3_bill_process_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_bill_process_name
+            description: >
+              Describes how Care attributed the bill. Derived from
+              callcenterreporting.rpt_c3_orders_ordersource_snap; not directly joinable.
+
+          - name: c3_receipt_move_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c3_receipt_move_flag
+            description: >
+              True if the bill was attributed to a Care rep retroactively (receipt move).
+              Derived from callcenterreporting.rpt_c3_orders_ordersource_snap; not directly
+              joinable.
+
+          # ── New Acquisition / Registration ──
+          - name: new_acquisition_bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_acquisition_bill_id
+            description: >
+              Bill ID for the customer's first paid purchase. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte (direct read, Iceberg S3); not directly joinable.
+
+          - name: new_acquisition_bill_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_acquisition_bill_country_code
+            description: >
+              Bill country code for the customer's first paid purchase. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte; not directly joinable.
+
+          - name: new_acquisition_bill_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_acquisition_bill_mst_date
+            dimension:
+              is_time: true
+            description: >
+              MST date of the customer's first paid purchase. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte; not directly joinable.
+
+          - name: new_registered_user_bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_registered_user_bill_id
+            description: >
+              Bill ID created when the customer initially registered. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte; not directly joinable.
+
+          - name: new_registered_user_bill_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_registered_user_bill_mst_date
+            dimension:
+              is_time: true
+            description: >
+              MST date of the new registered user bill. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte; not directly joinable.
+
+          - name: federation_partner_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: federation_partner_id
+            description: >
+              ID for the federation (SSO/identity) partner for the bill. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte; not directly joinable.
+
+          - name: federation_friendly_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: federation_friendly_name
+            description: >
+              Human-readable name of the federation partner. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte; not directly joinable.
+
+          # ── Web Pro / Portfolio ──
+          - name: web_pro_participant_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: web_pro_participant_type_name
+            description: >
+              For Web Pro bills: whether the purchase was initiated by a Pro or a Client.
+              Derived from gd_pro_mart.web_pro_shopper_client; not directly joinable.
+
+          - name: web_pro_shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: web_pro_shopper_id
+            description: >
+              Web Pro shopper ID for the bill. Derived from gd_pro_mart.web_pro_shopper_client;
+              not directly joinable.
+
+          - name: shopper_domain_portfolio_qty
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: shopper_domain_portfolio_qty
+            description: >
+              Number of domains in the customer's portfolio at bill time. Derived from
+              analytic_feature.shopper_domain_portfolio via original_shopper_id and partition
+              date range join; not directly joinable.
+
+          - name: shopper_domain_portfolio_segment_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: shopper_domain_portfolio_segment_name
+            description: >
+              Domain portfolio segment at bill time (e.g., Small, Medium, Large). Derived
+              from analytic_feature.shopper_domain_portfolio; not directly joinable.
+
+          - name: crm_portfolio_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: crm_portfolio_type_name
+            description: >
+              CRM portfolio type at bill time. Derived from
+              analytic_feature.shopper_crm_portfolio via original_shopper_id and partition
+              date range join; not directly joinable.
+
+          - name: crm_portfolio_rep_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: crm_portfolio_rep_id
+            description: >
+              CRM portfolio care rep ID at bill time. Derived from
+              analytic_feature.shopper_crm_portfolio; not directly joinable.
+
+          - name: crm_portfolio_rep_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: crm_portfolio_rep_name
+            description: >
+              CRM portfolio care rep name at bill time (PII encrypted). Derived from
+              analytic_feature.shopper_crm_portfolio; not directly joinable.
+
+          - name: current_crm_portfolio_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: current_crm_portfolio_type_name
+            description: >
+              Current (as-of-ETL-run) CRM portfolio type. Derived from
+              analytic_feature.shopper_crm_portfolio; not directly joinable.
+
+          - name: current_crm_portfolio_rep_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: current_crm_portfolio_rep_id
+            description: >
+              Current CRM portfolio care rep ID. Derived from
+              analytic_feature.shopper_crm_portfolio; not directly joinable.
+
+          - name: current_crm_portfolio_rep_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: current_crm_portfolio_rep_name
+            description: >
+              Current CRM portfolio care rep name (PII encrypted). Derived from
+              analytic_feature.shopper_crm_portfolio; not directly joinable.
+
+          # ── Domain Registry ──
+          - name: domain_back_end_registry_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: domain_back_end_registry_name
+            description: >
+              Back-end registry name for the TLD of the domain on this bill. Derived from
+              reference_cln.tld_registry_reference_cln via bigreporting.dim_product_snap
+              (transitive); reference_cln.tld_registry_reference_cln is not directly
+              joinable from ads_bill_line — use this column instead.
+
+          - name: domain_front_end_registry_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: domain_front_end_registry_name
+            description: >
+              Front-end registry name for the TLD. Derived from
+              reference_cln.tld_registry_reference_cln via bigreporting.dim_product_snap
+              (transitive); not directly joinable.
+
+          - name: domain_registry_family_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: domain_registry_family_name
+            description: >
+              Registry family name for the TLD. Derived from
+              reference_cln.tld_registry_reference_cln via bigreporting.dim_product_snap
+              (transitive); not directly joinable.
+
+          - name: domain_parent_tld_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: domain_parent_tld_name
+            description: >
+              Parent TLD name for the domain on this bill. Derived from
+              reference_cln.tld_registry_reference_cln via bigreporting.dim_product_snap
+              (transitive); not directly joinable.
+
+          - name: domain_bulk_pricing_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: domain_bulk_pricing_flag
+            description: True if the product type ID is 4 or 5 (bulk domain pricing tiers).
+
+          # ── Payment ──
+          - name: primary_payment_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: primary_payment_type_name
+            description: >
+              Payment method type for the highest-value payment instrument. Derived from
+              godaddycpl.gdshop_common_purchase_log_snap via bill_id join; not directly
+              joinable.
+
+          - name: primary_payment_subtype_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: primary_payment_subtype_name
+            description: >
+              Subtype of the primary payment method. Derived from
+              godaddycpl.gdshop_common_purchase_log_snap; not directly joinable.
+
+          - name: secondary_payment_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: secondary_payment_type_name
+            description: >
+              Payment method type for the second-highest payment instrument. Derived from
+              godaddycpl.gdshop_common_purchase_log_snap; not directly joinable.
+
+          - name: secondary_payment_subtype_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: secondary_payment_subtype_name
+            description: >
+              Subtype of the secondary payment method. Derived from
+              godaddycpl.gdshop_common_purchase_log_snap; not directly joinable.
+
+          - name: bill_payment_processor_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_payment_processor_name
+            description: >
+              Name of the payment processor used for this bill. Derived from
+              godaddycpl.gdshop_common_purchase_log_snap; not directly joinable.
+
+          - name: bill_payment_processor_common_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_payment_processor_common_name
+            description: >
+              Common display name of the payment processor. Derived from
+              godaddycpl.gdshop_common_purchase_log_snap; not directly joinable.
+
+          - name: bill_payment_cpl_trxn_currency_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_payment_cpl_trxn_currency_code
+            description: >
+              Currency code from the Common Purchase Log (CPL) transaction. Derived from
+              godaddycpl.gdshop_common_purchase_log_snap; not directly joinable.
+
+          - name: bill_payment_cpl_trxn_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_payment_cpl_trxn_amt
+            description: >
+              Transaction amount from the CPL record. Derived from
+              godaddycpl.gdshop_common_purchase_log_snap; not directly joinable.
+
+          # ── Free Trial ──
+          - name: free_trial_type_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: free_trial_type_desc
+            description: >
+              Description of the free trial type. Derived from enterprise.free_entitlement
+              via bill_id + bill_line_num join (CTE-aggregated); not directly joinable.
+
+          - name: free_trial_target_expiration_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: free_trial_target_expiration_date
+            dimension:
+              is_time: true
+            description: >
+              Target expiration date for the free trial. Derived from
+              enterprise.free_entitlement; not directly joinable.
+
+          - name: product_free_trial_acquisition_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_free_trial_acquisition_ts
+            dimension:
+              is_time: true
+            description: >
+              Timestamp of the original free trial bill creation. Derived from
+              enterprise.free_entitlement; not directly joinable.
+
+          - name: free_trial_bill_type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: free_trial_bill_type
+            description: Bill type for the free trial bill.
+
+          - name: free_trial_bill_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: free_trial_bill_date
+            dimension:
+              is_time: true
+            description: Date of the free trial bill.
+
+          # ── Exclusion / Discount ──
+          - name: exclude_reason_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: exclude_reason_desc
+            description: Reason this bill line is excluded from standard reporting.
+
+          - name: exclude_reason_month_end_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: exclude_reason_month_end_desc
+            description: Month-end specific exclusion reason for this bill line.
+
+          - name: original_shopper_exclude_reason_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_shopper_exclude_reason_desc
+            description: Reason this bill line is excluded based on the original shopper ID.
+
+          - name: original_shopper_exclude_reason_month_end_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_shopper_exclude_reason_month_end_desc
+            description: Month-end exclusion reason based on the original shopper ID.
+
+          - name: item_discount_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: item_discount_code
+            description: Discount code applied to this bill line.
+
+          - name: item_redemption_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: item_redemption_code
+            description: Code used after purchase to claim or activate the item.
+
+          - name: shopper_product_purchase_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: shopper_product_purchase_type_name
+            description: >
+              Customer purchase type classification for this bill line. Derived from
+              ecomm_mart.dim_bill_line_purchase_attribution; not directly joinable.
+
+          # ── Purchase Attribution / Misc ──
+          - name: item_tracking_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: item_tracking_code
+            description: >
+              Item tracking code (ITC) for this bill line. Derived from
+              ecomm_mart.dim_bill_line_purchase_attribution; not directly joinable.
+
+          - name: item_tracking_code_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: item_tracking_code_desc
+            description: >
+              Description of the item tracking code. Derived from
+              ecomm_mart.dim_bill_line_purchase_attribution; not directly joinable.
+
+          - name: purchase_path_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: purchase_path_name
+            description: >
+              GoDaddy website location where the product was added to cart. Derived from
+              ecomm_mart.dim_bill_line_purchase_attribution; not directly joinable.
+
+          - name: purchase_path_attributed_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: purchase_path_attributed_name
+            description: >
+              Attributed purchase path (may differ from actual path for attribution). Derived
+              from ecomm_mart.dim_bill_line_purchase_attribution; not directly joinable.
+
+          - name: point_of_purchase_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: point_of_purchase_name
+            description: Point of purchase derived from bill source, entered_by, and bill source code.
+
+          - name: sub_point_of_purchase_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: sub_point_of_purchase_name
+            description: Sub-category of the point of purchase.
+
+          - name: department_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: department_id
+            description: Business department ID responsible for this bill line.
+
+          - name: accounting_company_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: accounting_company_id
+            description: Accounting company ID for the GoDaddy legal entity responsible for this bill.
+
+          - name: original_bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_bill_id
+            description: For refunds or chargebacks, the bill_id of the original purchase being reversed.
+
+          - name: original_bill_line_num
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_bill_line_num
+            description: For refunds or chargebacks, the bill_line_num of the original purchase line.
+
+          - name: intent
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: intent
+            description: Intent for virtual bill lines (no payment).
+
+          - name: related_subscription
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: related_subscription
+            description: Subscription ID linking a virtual bill to the customer's active subscription.
+
+          # ── Flags ──
+          - name: refund_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: refund_flag
+            description: True if this is a refund transaction (bill_id prefix R).
+
+          - name: chargeback_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: chargeback_flag
+            description: True if this is a chargeback transaction (bill_id prefix C).
+
+          - name: virtual_bill_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: virtual_bill_flag
+            description: True if this is a virtual bill (no payment exchanged).
+
+          - name: new_acquisition_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_acquisition_flag
+            description: >
+              True if this bill represents the customer's first paid purchase. May be true
+              on two records for shoppers with account merges. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte; not directly joinable.
+            ai_context:
+              synonyms:
+                - new customer flag
+                - first purchase flag
+                - new acq flag
+
+          - name: new_registered_user_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_registered_user_flag
+            description: >
+              True when the customer initially registered with GoDaddy. Derived from
+              ecomm_core_conformed.dim_customer_registration_acquisition via
+              shopper_dedup_cte; not directly joinable.
+
+          - name: bill_fraud_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_fraud_flag
+            description: >
+              True if the bill has been flagged as fraudulent. Derived from
+              fraud_cln.fraud_note_cln and fraud_cln.fraud_review_history_cln via
+              bill_id→order_id join; not directly joinable.
+
+          - name: bill_fraud_flag_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_fraud_flag_ts
+            dimension:
+              is_time: true
+            description: >
+              Timestamp when the bill was flagged as fraudulent. Derived from
+              fraud_cln.fraud_note_cln; not directly joinable.
+
+          - name: bill_fraud_flag_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_fraud_flag_date
+            dimension:
+              is_time: true
+            description: >
+              Date when the bill was flagged as fraudulent. Derived from
+              fraud_cln.fraud_note_cln; not directly joinable.
+
+          - name: bill_fraud_review_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_fraud_review_id
+            description: >
+              Fraud review ID associated with this bill. Derived from
+              fraud_cln.fraud_note_cln and fraud_cln.fraud_review_history_cln; not directly
+              joinable.
+
+          - name: domain_bulk_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: domain_bulk_flag
+            description: >
+              True if the total non-refund domain registration units on the bill are >= 50.
+              Computed via window SUM over bill_id.
+
+          - name: free_bill_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: free_bill_flag
+            description: True if the entire bill has no GCR (no revenue on any line).
+
+          - name: free_bill_line_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: free_bill_line_flag
+            description: >
+              True for a non-virtual bill line where receipt_price_usd_amt = 0 and
+              gcr_usd_amt = 0.
+
+          - name: free_bill_line_with_fair_market_value_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: free_bill_line_with_fair_market_value_flag
+            description: >
+              True for a non-virtual bill line where receipt_price_usd_amt = 0 but
+              gcr_usd_amt > 0 (product has fair market value but no cash exchanged).
+
+          - name: product_free_trial_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_free_trial_flag
+            description: >
+              True for bills that initiated a free trial. Derived from
+              enterprise.free_entitlement; not directly joinable.
+
+          - name: product_free_trial_conversion_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_free_trial_conversion_flag
+            description: >
+              True if the customer converted from a free trial to a paid subscription.
+              Derived from enterprise.free_entitlement; not directly joinable.
+
+          - name: product_free_term_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_free_term_flag
+            description: True for products that are free for the first billing period.
+
+          - name: accounting_deferred_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: accounting_deferred_flag
+            description: True if the revenue on this bill line is deferred for accounting.
+
+          - name: primary_product_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: primary_product_flag
+            description: True for primary products (not add-ons or supplemental products).
+
+          - name: renewal_price_locked_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: renewal_price_locked_flag
+            description: True if the renewal price is locked for this product.
+
+          - name: units_as_bills_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: units_as_bills_flag
+            description: >
+              True if this purchase is for exactly 1 resource regardless of unit quantity
+              (units-as-bills product type).
+
+          # ── ETL Metadata ──
+          - name: etl_build_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_build_mst_ts
+            dimension:
+              is_time: true
+            description: MST timestamp when this record was last updated by the ETL process.
+
+          - name: source_process_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: source_process_name
+            description: Name of the ETL process that created or last updated this record.
+
+          # ── Partition ──
+          - name: partition_bill_mst_year_month
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: partition_bill_mst_year_month
+            dimension:
+              is_time: true
+            description: >
+              Partition key in YYYY-MM format representing the bill MST year-month. Always
+              include this column in WHERE clause filters to avoid full-table scans.
+            ai_context:
+              synonyms:
+                - partition key
+                - year month partition
+                - bill month
+
+
+      # ──────────────────────────────────────────────────────────────
+      # DIMENSION 1: ecomm360.fact_bill_line_vw
+      # ──────────────────────────────────────────────────────────────
+      - name: fact_bill_line_vw
+        source: ecomm360.fact_bill_line_vw
+        primary_key: [bill_id, bill_line_num]
+        unique_keys:
+          - [bill_id, bill_line_num]
+        description: >
+          Enterprise Data Store (EDS) fact bill line view. The core source of raw billing
+          transaction data at the bill line grain. Direct upstream source for ads_bill_line.
+        ai_context:
+          synonyms:
+            - EDS fact bill line
+            - fact bill line view
+        fields:
+          - name: bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_id
+            description: Unique bill identifier. PK component.
+
+          - name: bill_line_num
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_line_num
+            description: Line number within the bill. PK component.
+
+          - name: pf_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pf_id
+            description: Product family ID.
+
+          - name: private_label_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: private_label_id
+            description: Private label (reseller) partner ID.
+
+          - name: bill_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_country_code
+            description: ISO country code of the billing address.
+
+          - name: bill_isc_source_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_isc_source_code
+            description: Marketing attribution ISC source code.
+
+          - name: bill_modified_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_modified_mst_ts
+            dimension:
+              is_time: true
+            description: MST timestamp of bill creation or last modification.
+
+          - name: bill_modified_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_modified_mst_date
+            dimension:
+              is_time: true
+            description: MST date of bill creation or last modification.
+
+          - name: subaccount_customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: subaccount_customer_id
+            description: Customer ID for the subaccount. Join key to customers.customer_id_mapping_snapshot.
+
+          - name: trxn_currency_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: trxn_currency_code
+            description: ISO 4217 transaction currency code.
+
+          - name: receipt_price_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: receipt_price_usd_amt
+            description: Amount paid in USD after discounts.
+
+          - name: gcr_usd_amt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: gcr_usd_amt
+            description: Gross Cash Receipts in USD.
+
+          - name: refund_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: refund_flag
+            description: True if this is a refund transaction.
+
+          - name: chargeback_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: chargeback_flag
+            description: True if this is a chargeback transaction.
+
+          - name: virtual_order_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: virtual_order_flag
+            description: True if this is a virtual order (no payment).
+
+          - name: etl_insert_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_insert_utc_ts
+            dimension:
+              is_time: true
+            description: UTC timestamp when this record was inserted by ETL.
+
+          - name: etl_update_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_update_utc_ts
+            dimension:
+              is_time: true
+            description: UTC timestamp when this record was last updated by ETL.
+
+      # ──────────────────────────────────────────────────────────────
+      # DIMENSION 2: ecomm360.dim_bill_vw
+      # ──────────────────────────────────────────────────────────────
+      - name: dim_bill_vw
+        source: ecomm360.dim_bill_vw
+        primary_key: [bill_id]
+        unique_keys:
+          - [bill_id]
+        description: >
+          Enterprise Data Store bill dimension view. Contains bill-level attributes
+          including shopper/customer ID references and modification timestamps.
+        ai_context:
+          synonyms:
+            - EDS bill dimension
+            - bill dim view
+        fields:
+          - name: bill_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_id
+            description: Unique bill identifier. PK.
+
+          - name: event_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: event_id
+            description: Event ID associated with the bill.
+
+          - name: original_shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_shopper_id
+            description: Shopper ID at original bill creation.
+
+          - name: original_customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: original_customer_id
+            description: Customer ID at original bill creation.
+
+          - name: merged_shopper_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: merged_shopper_id
+            description: Current post-merge shopper ID.
+
+          - name: merged_customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: merged_customer_id
+            description: Current post-merge customer ID.
+
+          - name: rep_version_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: rep_version_id
+            description: Care rep version ID. Join key to care_mart.employee_master_snap_v3.
+
+          - name: bill_modified_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bill_modified_mst_date
+            dimension:
+              is_time: true
+            description: MST date of bill modification.
+
+          - name: current_record_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: current_record_flag
+            description: True if this is the current version of the bill record (SCD).
+
+          - name: etl_insert_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_insert_utc_ts
+            dimension:
+              is_time: true
+            description: UTC timestamp when this record was inserted by ETL.
+
+          - name: etl_update_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_update_utc_ts
+            dimension:
+              is_time: true
+            description: UTC timestamp when this record was last updated by ETL.
+
+      # ──────────────────────────────────────────────────────────────
+      # DIMENSION 3: bigreporting.dim_product_snap
+      # ──────────────────────────────────────────────────────────────
+      - name: dim_product_snap
+        source: bigreporting.dim_product_snap
+        primary_key: [pf_id]
+        unique_keys:
+          - [pf_id]
+        description: >
+          Product dimension snapshot. Contains product family attributes including PnL
+          hierarchy, product type, billing periods, and department info. Join to
+          ads_bill_line via pf_id. Note: bigreporting.dim_product_hist_cln is a conditional
+          alternate activated by the --dim-product-table flag; same semantic role, not a
+          separate OSI dataset.
+        ai_context:
+          synonyms:
+            - product dim
+            - product snapshot
+            - product catalog
+        fields:
+          - name: pf_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pf_id
+            description: Product family ID. PK.
+
+          - name: product_key
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_key
+            description: Surrogate product key.
+
+          - name: productname
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: productname
+            description: Product name.
+
+          - name: productfamily
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: productfamily
+            description: Product family grouping.
+
+          - name: productcategory
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: productcategory
+            description: Product category.
+
+          - name: productsubcategory
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: productsubcategory
+            description: Product sub-category.
+
+          - name: productgroup
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: productgroup
+            description: Product group.
+
+          - name: productline
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: productline
+            description: Product line.
+
+          - name: period
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: period
+            description: Billing period unit.
+
+          - name: numberofperiods
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: numberofperiods
+            description: Number of billing periods.
+
+          - name: new_renewal
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: new_renewal
+            description: New or renewal designation.
+
+          - name: pnl_group
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_group
+            description: PnL group (1st level Finance PnL hierarchy).
+
+          - name: pnl_category
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_category
+            description: PnL category (2nd level Finance PnL hierarchy).
+
+          - name: pnl_line
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_line
+            description: PnL line (3rd level Finance PnL hierarchy).
+
+          - name: pnl_subline
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_subline
+            description: >
+              PnL sub-line (4th level Finance PnL hierarchy). Also used as tld_name join key
+              to reference_cln.tld_registry_reference_cln for domain products (transitive).
+
+          - name: pnl_version
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_version
+            description: PnL version (flexible pseudo-level).
+
+          - name: pnl_new_renewal
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pnl_new_renewal
+            description: PnL new or renewal designation.
+
+          - name: gdshop_product_typeid
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: gdshop_product_typeid
+            description: GDShop product type ID.
+
+          - name: gdshop_product_type_description
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: gdshop_product_type_description
+            description: GDShop product type description.
+
+          - name: dept_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: dept_id
+            description: Business department ID.
+
+          - name: dept_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: dept_name
+            description: Business department name.
+
+          - name: unitsasorders
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: unitsasorders
+            description: True if product units are treated as individual orders.
+
+          - name: isprimaryproduct
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isprimaryproduct
+            description: True if this is a primary product (not an add-on).
+
+          - name: createdate
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: createdate
+            dimension:
+              is_time: true
+            description: Date the product was created in the catalog.
+
+          - name: updatedate
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: updatedate
+            dimension:
+              is_time: true
+            description: Date the product was last updated.
+
+          - name: deletedate
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: deletedate
+            dimension:
+              is_time: true
+            description: Date the product was deleted from the catalog (null if active).
+
+      # ──────────────────────────────────────────────────────────────
+      # DIMENSION 4: dp_enterprise.dim_isc_source_code
+      # ──────────────────────────────────────────────────────────────
+      - name: dim_isc_source_code
+        source: dp_enterprise.dim_isc_source_code
+        primary_key: [isc_source_code]
+        unique_keys:
+          - [isc_source_code]
+        description: >
+          ISC (Internal/Internet Source Code) dimension. Contains full marketing attribution
+          breakdown for each ISC code. Join to ads_bill_line via
+          bill_isc_source_code = isc_source_code.
+        ai_context:
+          synonyms:
+            - ISC dimension
+            - marketing source code dimension
+            - attribution dimension
+        fields:
+          - name: isc_source_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_source_code
+            description: ISC source code. PK. Joins to ads_bill_line.bill_isc_source_code.
+
+          - name: isc_description
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_description
+            description: Human-readable description of the ISC code.
+
+          - name: isc_channel_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_channel_id
+            description: Marketing channel ID.
+
+          - name: isc_channel_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_channel_name
+            description: Marketing channel name.
+
+          - name: isc_sub_channel_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_sub_channel_id
+            description: Marketing sub-channel ID.
+
+          - name: isc_sub_channel_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_sub_channel_name
+            description: Marketing sub-channel name.
+
+          - name: isc_vendor_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_vendor_id
+            description: Vendor ID for the ISC.
+
+          - name: isc_vendor_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_vendor_name
+            description: Vendor name for the ISC.
+
+          - name: isc_product_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_product_id
+            description: Product ID component of the ISC.
+
+          - name: isc_product_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_product_name
+            description: Product name component of the ISC.
+
+          - name: isc_company_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_company_id
+            description: Company ID component of the ISC.
+
+          - name: isc_campaign_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_campaign_id
+            description: Campaign ID component of the ISC.
+
+          - name: isc_campaign_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_campaign_name
+            description: Campaign name component of the ISC.
+
+          - name: isc_media_specialist_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_media_specialist_id
+            description: Media specialist ID.
+
+          - name: isc_media_specialist_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_media_specialist_name
+            description: Media specialist name (PII encrypted).
+
+          - name: isc_viral_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_viral_flag
+            description: True if this ISC is classified as viral marketing.
+
+          - name: isc_acquisition_tier_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_acquisition_tier_name
+            description: Acquisition tier name for the ISC.
+
+          - name: isc_country_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_country_code
+            description: Country code associated with the ISC.
+
+          - name: isc_country_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_country_name
+            description: Country name associated with the ISC.
+
+          - name: isc_domestic_international_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_domestic_international_name
+            description: Domestic or International classification for this ISC.
+
+          - name: isc_region_1_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_region_1_name
+            description: 1st-level geographic region for the ISC.
+
+          - name: isc_region_2_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: isc_region_2_name
+            description: 2nd-level geographic region for the ISC.
+
+      # ──────────────────────────────────────────────────────────────
+      # DIMENSION 5: partner360.dim_reseller_vw
+      # ──────────────────────────────────────────────────────────────
+      - name: dim_reseller_vw
+        source: partner360.dim_reseller_vw
+        primary_key: [private_label_id]
+        unique_keys:
+          - [private_label_id]
+        description: >
+          Partner360 reseller dimension view. Contains reseller/private-label partner
+          attributes. Join to ads_bill_line via private_label_id. Note: customer360.dim_customer_vw
+          and finance360.dim_country_vw are joined transitively through this view; their
+          attributes are materialized onto the ads_bill_line fact (reseller_shopper_id,
+          reseller_country_code, reseller_country_name).
+        ai_context:
+          synonyms:
+            - reseller dimension
+            - private label dimension
+            - partner dimension
+        fields:
+          - name: private_label_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: private_label_id
+            description: Private label ID. PK. Joins to ads_bill_line.private_label_id.
+
+          - name: reseller_type_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_type_id
+            description: Reseller type ID.
+
+          - name: reseller_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_type_name
+            description: Reseller type name.
+
+          - name: reseller_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_name
+            description: Reseller name.
+
+          - name: reseller_customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reseller_customer_id
+            description: >
+              Customer ID for the reseller. Used as join key to customer360.dim_customer_vw
+              (transitive) and ecomm_core_conformed.dim_customer_registration_acquisition.
+
+          - name: status_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status_id
+            description: Reseller program status ID.
+
+          - name: program_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: program_id
+            description: Reseller program ID.
+
+          - name: display_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: display_name
+            description: Reseller display name.
+
+          - name: company_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: company_name
+            description: Reseller company name.
+
+          - name: market_site_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: market_site_code
+            description: Market site code for the reseller.
+
+          - name: customer_support_opt_out_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_support_opt_out_flag
+            description: True if the reseller has opted out of GoDaddy customer support.
+
+          - name: cross_sell_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: cross_sell_flag
+            description: True if cross-sell is enabled for this reseller.
+
+          - name: email_opt_in_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: email_opt_in_flag
+            description: True if the reseller has opted in to email marketing.
+
+          - name: current_record_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: current_record_flag
+            description: True if this is the current version of the reseller record (SCD).
+
+          - name: etl_build_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_build_mst_ts
+            dimension:
+              is_time: true
+            description: MST timestamp when this record was last built by ETL.
+
+      # ──────────────────────────────────────────────────────────────
+      # DIMENSION 6: care_mart.employee_master_snap_v3
+      # ──────────────────────────────────────────────────────────────
+      - name: employee_master_snap_v3
+        source: care_mart.employee_master_snap_v3
+        primary_key: [rep_version_id]
+        unique_keys:
+          - [rep_version_id]
+        description: >
+          Care employee master snapshot (v3). Contains Care rep attributes including name,
+          department, location, and supervisor. Join to ads_bill_line via rep_version_id.
+        ai_context:
+          synonyms:
+            - employee master
+            - care rep dimension
+            - rep dimension
+        fields:
+          - name: rep_version_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: rep_version_id
+            description: Care rep version ID. PK. Joins to ads_bill_line.rep_version_id.
+
+          - name: worker_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: worker_id
+            description: Worker ID for the employee.
+
+          - name: employee_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: employee_id
+            description: Employee ID.
+
+          - name: rep_version_order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: rep_version_order_id
+            description: Ordering within rep versions for the same employee.
+
+          - name: active_flag
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: active_flag
+            description: True if this employee record is currently active.
+
+          - name: employee_full_name_encrypt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: employee_full_name_encrypt
+            description: Employee full name (PII encrypted).
+
+          - name: employee_last_name_encrypt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: employee_last_name_encrypt
+            description: Employee last name (PII encrypted).
+
+          - name: employee_first_name_encrypt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: employee_first_name_encrypt
+            description: Employee first name (PII encrypted).
+
+          - name: supervisor_manager_user_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: supervisor_manager_user_id
+            description: User ID of the supervisor/manager.
+
+          - name: supervisor_employee_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: supervisor_employee_id
+            description: Employee ID of the supervisor.
+
+          - name: supervisor_full_name_encrypt
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: supervisor_full_name_encrypt
+            description: Supervisor full name (PII encrypted).
+
+          - name: department_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: department_id
+            description: Department ID.
+
+          - name: rollup_department_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: rollup_department_name
+            description: Rollup department name for reporting.
+
+          - name: management_unit_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: management_unit_id
+            description: Management unit ID.
+
+          - name: management_unit_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: management_unit_name
+            description: Management unit name.
+
+          - name: location_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: location_id
+            description: Location ID for the call center.
+
+          - name: location_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: location_name
+            description: Location name for the call center.
+
+          - name: region_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region_name
+            description: Geographic region name.
+
+          - name: rep_type_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: rep_type_id
+            description: Rep type ID.
+
+          - name: rep_type_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: rep_type_name
+            description: Rep type name (e.g., inbound, outbound, chat).
+
+          - name: job_code
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: job_code
+            description: Job code for the employee's role.
+
+          - name: job_title_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: job_title_name
+            description: Job title name.
+
+          - name: job_effective_mst_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: job_effective_mst_date
+            dimension:
+              is_time: true
+            description: MST date the job assignment became effective.
+
+          - name: start_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: start_mst_ts
+            dimension:
+              is_time: true
+            description: MST timestamp the rep version record became effective.
+
+          - name: end_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: end_mst_ts
+            dimension:
+              is_time: true
+            description: MST timestamp the rep version record expired (null if current).
+
+          - name: snapshot_mst_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: snapshot_mst_ts
+            dimension:
+              is_time: true
+            description: MST timestamp of this snapshot.
+
+          - name: etl_build_utc_ts
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: etl_build_utc_ts
+            dimension:
+              is_time: true
+            description: UTC timestamp when this record was last built by ETL.
+
+    # ──────────────────────────────────────────────────────────────
+    # RELATIONSHIPS
+    # ──────────────────────────────────────────────────────────────
+    relationships:
+      - name: ads_bill_line_to_fact_bill_line_vw
+        from: ads_bill_line
+        to: fact_bill_line_vw
+        from_columns: [bill_id, bill_line_num]
+        to_columns: [bill_id, bill_line_num]
+        ai_context:
+          instructions: >
+            ads_bill_line is derived from fact_bill_line_vw (ecomm360 EDS). Both share
+            the same grain (bill_id + bill_line_num). Use ads_bill_line for analytics;
+            join to fact_bill_line_vw only when accessing raw EDS-specific attributes
+            not surfaced on the analytic fact.
+
+      - name: ads_bill_line_to_dim_bill_vw
+        from: ads_bill_line
+        to: dim_bill_vw
+        from_columns: [bill_id]
+        to_columns: [bill_id]
+        ai_context:
+          instructions: >
+            ads_bill_line joins to dim_bill_vw via bill_id to resolve bill-level attributes.
+            Most bill attributes are already materialized onto ads_bill_line.
+
+      - name: ads_bill_line_to_dim_product_snap
+        from: ads_bill_line
+        to: dim_product_snap
+        from_columns: [pf_id]
+        to_columns: [pf_id]
+        ai_context:
+          instructions: >
+            Join on pf_id to access additional product catalog attributes not materialized
+            onto ads_bill_line. bigreporting.dim_product_hist_cln is a conditional alternate
+            (same semantic role; activated by --dim-product-table flag; not a separate OSI
+            dataset).
+
+      - name: ads_bill_line_to_dim_isc_source_code
+        from: ads_bill_line
+        to: dim_isc_source_code
+        from_columns: [bill_isc_source_code]
+        to_columns: [isc_source_code]
+        ai_context:
+          instructions: >
+            Note: ads_bill_line.bill_isc_source_code maps to dim_isc_source_code.isc_source_code
+            (column name differs). Most ISC attributes are already materialized onto
+            ads_bill_line as bill_isc_* columns.
+
+      - name: ads_bill_line_to_dim_reseller_vw
+        from: ads_bill_line
+        to: dim_reseller_vw
+        from_columns: [private_label_id]
+        to_columns: [private_label_id]
+        ai_context:
+          instructions: >
+            Join on private_label_id to access reseller attributes. Most reseller attributes
+            are already materialized onto ads_bill_line. customer360.dim_customer_vw and
+            finance360.dim_country_vw are reached only transitively through dim_reseller_vw;
+            do not attempt to join those tables directly from ads_bill_line.
+
+      - name: ads_bill_line_to_employee_master_snap_v3
+        from: ads_bill_line
+        to: employee_master_snap_v3
+        from_columns: [rep_version_id]
+        to_columns: [rep_version_id]
+        ai_context:
+          instructions: >
+            Join on rep_version_id to access Care rep attributes not materialized onto
+            ads_bill_line. Note: C3 attribution attributes (c3_rep_name,
+            c3_rep_supervisor_name, etc.) are derived from callcenterreporting sources,
+            not from employee_master_snap_v3 directly.
+
+    # ──────────────────────────────────────────────────────────────
+    # METRICS
+    # ──────────────────────────────────────────────────────────────
+    metrics:
+      - name: total_gcr_usd_amt
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(ads_bill_line.gcr_usd_amt)
+        description: >
+          Total Gross Cash Receipts in USD. Primary revenue metric. Note: gcr_usd_amt
+          is NULL for refund and chargeback transactions; use refund_flag=false AND
+          chargeback_flag=false to restrict to positive-revenue transactions.
+        ai_context:
+          synonyms:
+            - total GCR
+            - total gross cash receipts
+            - total revenue
+            - revenue
+
+      - name: total_receipt_price_usd_amt
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(ads_bill_line.receipt_price_usd_amt)
+        description: Total amount paid in USD after all discounts across all bill lines.
+        ai_context:
+          synonyms:
+            - total receipt price
+            - total paid amount
+            - total billed amount
+
+      - name: total_gcr_constant_currency_amt
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(ads_bill_line.gcr_constant_currency_amt)
+        description: >
+          Total GCR using a constant FX rate for year-over-year comparisons. Derived from
+          dp_stage.ref_order_constant_currency (materialized onto fact).
+        ai_context:
+          synonyms:
+            - constant currency GCR
+            - constant currency revenue
+            - YoY comparable revenue
+
+      - name: total_margin_gcr_usd_amt
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(ads_bill_line.margin_gcr_usd_amt)
+        description: Total GCR margin in USD after cost of goods sold (COGS).
+        ai_context:
+          synonyms:
+            - total margin
+            - total GCR margin
+            - gross margin
+
+      - name: bill_line_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(*)
+        description: >
+          Total number of bill lines. Grain is one row per (bill_id, bill_line_num).
+          Uniqueness enforced by DQ constraint.
+        ai_context:
+          synonyms:
+            - count of transactions
+            - number of bill lines
+            - transaction count
+
+      - name: new_acquisition_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: "COUNT(DISTINCT CASE WHEN ads_bill_line.new_acquisition_flag = TRUE THEN ads_bill_line.bill_id END)"
+        description: >
+          Count of distinct new customer acquisition bills (new_acquisition_flag=true).
+          Uses DISTINCT bill_id because shoppers with account merges may have two records
+          with new_acquisition_flag=true for the same acquisition event.
+        ai_context:
+          synonyms:
+            - new customer count
+            - new acquisition count
+            - new customer acquisitions
+
+      - name: total_unit_qty
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(ads_bill_line.unit_qty)
+        description: Total units purchased across all bill lines.
+        ai_context:
+          synonyms:
+            - total units
+            - unit volume
+            - units sold
+
+      - name: total_tax_usd_amt
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(ads_bill_line.tax_usd_amt)
+        description: Total tax charged in USD across all bill lines.
+        ai_context:
+          synonyms:
+            - total tax
+            - tax collected
+
+    # ──────────────────────────────────────────────────────────────
+    # CUSTOM EXTENSIONS
+    # ──────────────────────────────────────────────────────────────
+    custom_extensions:
+      - vendor_name: GODADDY
+        data: |
+          {
+            "lake_table_path": "analytic/ads-bill-line",
+            "pyspark_path": "ecomm/analytic-bill-line/src/pyspark/ads_bill_line.py",
+            "dag_name": "ecomm_analytic_bill_line_core",
+            "refresh_cadence": "daily at 7:00 AM MST (cron: 30 3 * * * UTC)",
+            "sla_delivery": "7:00 AM MST",
+            "data_tier": 2,
+            "partition_key": "partition_bill_mst_year_month",
+            "domain": "ecomm",
+            "organization": "Emerald Data Team (EDT)",
+            "pipeline_lineage": {
+              "intermediate_tables": [
+                {
+                  "table": "analytic_local.tmp_ads_bill_line",
+                  "role": "staging",
+                  "upstream_pyspark": "ecomm/analytic-bill-line/src/pyspark/ads_bill_line.py",
+                  "do_not_claim_reason": "intermediate staging table created and dropped within same PySpark job; not in lake catalog"
+                },
+                {
+                  "table": "analytic_local.rs_ads_bill_line",
+                  "role": "redshift-delta-staging",
+                  "upstream_pyspark": "ecomm/analytic-bill-line/src/pyspark/ads_bill_line.py",
+                  "do_not_claim_reason": "Redshift delta staging table; not a lake catalog table; downstream Redshift artifact"
+                }
+              ],
+              "transitive_sources": [
+                {
+                  "table": "customer360.dim_customer_vw",
+                  "via": "partner360.dim_reseller_vw",
+                  "materialized_in_fields": ["reseller_shopper_id"],
+                  "do_not_claim_reason": "not directly joined to fact; joined only to dim_reseller_vw; no direct FK in ads_bill_line pointing to customer360"
+                },
+                {
+                  "table": "finance360.dim_country_vw",
+                  "via": "partner360.dim_reseller_vw",
+                  "materialized_in_fields": ["reseller_country_code", "reseller_country_name"],
+                  "do_not_claim_reason": "not found in lake catalog (no finance360 schema); joined only via dim_reseller_vw (transitive), not directly from fact"
+                },
+                {
+                  "table": "ecomm_core_conformed.dim_customer_registration_acquisition",
+                  "via": "shopper_dedup_cte (direct read, Iceberg S3)",
+                  "materialized_in_fields": [
+                    "new_acquisition_flag", "new_registered_user_flag",
+                    "new_acquisition_bill_id", "new_acquisition_bill_mst_date",
+                    "new_acquisition_bill_country_code", "new_registered_user_bill_id",
+                    "new_registered_user_bill_mst_date", "federation_partner_id",
+                    "federation_friendly_name"
+                  ],
+                  "do_not_claim_reason": "not found in lake catalog; Iceberg S3 table with no lake registry path; attributes fully materialized onto fact"
+                },
+                {
+                  "table": "reference_cln.tld_registry_reference_cln",
+                  "via": "bigreporting.dim_product_snap",
+                  "materialized_in_fields": [
+                    "domain_back_end_registry_name", "domain_front_end_registry_name",
+                    "domain_registry_family_name", "domain_parent_tld_name"
+                  ],
+                  "do_not_claim_reason": "transitive source via dim_product_snap; no direct join from fact; domain registry attributes fully materialized onto fact"
+                },
+                {
+                  "table": "customer360.dim_customer_history_vw",
+                  "via": "shopper_dedup_cte (filter only)",
+                  "materialized_in_fields": ["original_shopper_id", "merged_shopper_id"],
+                  "do_not_claim_reason": "used for shopper deduplication filter only; no FK preserved in fact schema"
+                }
+              ],
+              "materialized_direct_reads": [
+                {
+                  "table": "dm_reference.dim_geography",
+                  "materialized_in_fields": [
+                    "bill_country_name", "bill_report_region_1_name", "bill_report_region_2_name",
+                    "bill_report_region_3_name", "bill_report_focal_country_name",
+                    "bill_report_sub_region_name", "bill_domestic_international_name"
+                  ]
+                },
+                {
+                  "table": "analytic_feature.customer_type_history",
+                  "materialized_in_fields": ["customer_type_name", "customer_type_reason_desc"],
+                  "note": "do_not_claim analytic_feature.customer_type as separate dataset: code vs lake-lineage discrepancy (code references customer_type; lake lineage resolves to customer_type_history); attributes fully materialized onto fact"
+                },
+                {
+                  "table": "analytic_feature.shopper_crm_portfolio",
+                  "materialized_in_fields": [
+                    "crm_portfolio_type_name", "crm_portfolio_rep_id", "crm_portfolio_rep_name",
+                    "current_crm_portfolio_type_name", "current_crm_portfolio_rep_id",
+                    "current_crm_portfolio_rep_name"
+                  ]
+                },
+                {
+                  "table": "analytic_feature.shopper_domain_portfolio",
+                  "materialized_in_fields": [
+                    "shopper_domain_portfolio_qty", "shopper_domain_portfolio_segment_name"
+                  ]
+                },
+                {
+                  "table": "gd_pro_mart.web_pro_shopper_client",
+                  "materialized_in_fields": ["web_pro_participant_type_name", "web_pro_shopper_id"]
+                },
+                {
+                  "table": "gmode.customer_type_gcr_logic_lookup",
+                  "materialized_in_fields": [
+                    "pnl_usi_flag", "pnl_gdii_flag", "pnl_partner_flag",
+                    "pnl_dri_flag", "pnl_commerce_flag", "pnl_priority_num"
+                  ]
+                },
+                {
+                  "table": "ecomm_mart.dim_bill_line_purchase_attribution",
+                  "materialized_in_fields": [
+                    "purchase_path_name", "purchase_path_attributed_name",
+                    "item_tracking_code", "item_tracking_code_desc",
+                    "shopper_product_purchase_type_name"
+                  ]
+                },
+                {
+                  "table": "enterprise.free_entitlement",
+                  "materialized_in_fields": [
+                    "free_trial_type_desc", "free_trial_target_expiration_date",
+                    "product_free_trial_acquisition_ts", "product_free_trial_flag",
+                    "product_free_trial_conversion_flag"
+                  ]
+                },
+                {
+                  "table": "customers.customer_id_mapping_snapshot",
+                  "materialized_in_fields": [
+                    "original_shopper_id", "merged_shopper_id", "subaccount_shopper_id",
+                    "original_customer_id", "merged_customer_id"
+                  ]
+                },
+                {
+                  "table": "callcenterreporting.rpt_c3_orders_ordersource_snap",
+                  "materialized_in_fields": [
+                    "c3_rep_name", "c3_rep_supervisor_name", "c3_rep_department_name",
+                    "c3_call_center_location_name", "c3_bill_flag", "c3_attribution_type_name",
+                    "c3_bill_source_code", "c3_bill_process_name", "c3_receipt_move_flag"
+                  ],
+                  "note": "do_not_claim callcenterreporting.rpt_c3_orders_snap as OSI dataset: not confirmed in lake catalog search; used as alternative C3/payment processor check; all attributes materialized onto fact"
+                },
+                {
+                  "table": "care_mart.rev_attribution",
+                  "materialized_in_fields": ["c3_bill_flag", "c3_attribution_type_name"]
+                },
+                {
+                  "table": "dp_stage.ref_order_constant_currency",
+                  "materialized_in_fields": [
+                    "receipt_price_constant_currency_amt", "gcr_constant_currency_amt"
+                  ]
+                },
+                {
+                  "table": "dp_stage.ref_commission_products",
+                  "materialized_in_fields": [
+                    "aftermarket_seller_commission_usd_amt",
+                    "aftermarket_seller_commission_trxn_amt"
+                  ]
+                },
+                {
+                  "table": "fraud_cln.fraud_note_cln",
+                  "materialized_in_fields": [
+                    "bill_fraud_flag", "bill_fraud_flag_ts",
+                    "bill_fraud_flag_date", "bill_fraud_review_id"
+                  ]
+                },
+                {
+                  "table": "fraud_cln.fraud_review_history_cln",
+                  "materialized_in_fields": ["bill_fraud_flag", "bill_fraud_review_id"]
+                },
+                {
+                  "table": "godaddycpl.gdshop_common_purchase_log_snap",
+                  "materialized_in_fields": [
+                    "primary_payment_type_name", "primary_payment_subtype_name",
+                    "secondary_payment_type_name", "secondary_payment_subtype_name",
+                    "bill_payment_processor_name", "bill_payment_processor_common_name",
+                    "bill_payment_cpl_trxn_currency_code", "bill_payment_cpl_trxn_amt"
+                  ]
+                }
+              ],
+              "legacy_sources": []
+            },
+            "query_guards": {
+              "grain": "one row per (bill_id, bill_line_num)",
+              "partition_filter": "partition_bill_mst_year_month",
+              "primary_key_notes": "Composite PK (bill_id, bill_line_num); both annotated @PrimaryKey in DDL; enforced by DQ constraint in ads_bill_line.json. bill_id includes prefix R for refunds, C for chargebacks."
+            }
+          }
